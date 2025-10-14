@@ -64,11 +64,14 @@ In addition to the workers, the pipeline contains utility components that use he
 - **Input:** List of merged OCR phrases, source language, target language.
 - **Output:** Translated text phrases.
 
-### 6. Translation Merging
-- **Purpose:** Redistributes merged translated text back into individual OCR elements.
-- **Method:** Uses bounding box geometry and orientation (horizontal/vertical) to proportionally allocate words to each OCR box, ensuring all words are assigned without loss.
-- **Input:** Merged OCR results with translations, original OCR results.
-- **Output:** OCR results updated with `merged_text` fields containing translated text per polygon box.
+### 6. Drawing
+- **Purpose:** Renders the translated text back onto the inpainted image.
+- **Features:**
+  - Geometry-aware: Matches the size and position of original text polygons.
+  - Auto font sizing and color estimation to preserve the style of the original text.
+- **Input:** Inpainted image, translated OCR results, original image for reference.
+- **Output:** Final translated image with text visually aligned and styled.
+
 
 ---
 
@@ -96,5 +99,6 @@ Input Image
     │
     ▼
 [Drawing Worker] --> Final translated image
+
 
 
