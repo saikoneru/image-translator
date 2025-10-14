@@ -21,9 +21,7 @@ The main interface (`pipeline.py`) acts as a **gateway** that orchestrates all w
 git clone https://github.com/saikoneru/image-translator.git
 cd image-translator
 
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-venv\Scripts\activate     # Windows
+pip install -r requirements.txt
 pip install -e .
 ```
 
@@ -99,6 +97,7 @@ Input Image
     │
     ▼
 [Drawing Worker] --> Final translated image
+
 
 
 
