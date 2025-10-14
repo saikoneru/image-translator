@@ -8,6 +8,7 @@ import functools
 import io
 from queue import Queue
 from threading import Thread, Event
+import numpy as np
 
 # ----------------------------
 # Abstract OCR Worker Interface
@@ -93,13 +94,13 @@ class PaddleOCRWorker(BaseOCRWorker):
         return ocr
 
     def predict(self, image_path: str) -> List[Dict]:
-        raw_results = self.ocr_manager.predict(image_path)
+        raw_results = self.ocr_manager.predict(image_path)[0]
         output = []
 
-        for line in raw_results[0]:
-            poly, (text, conf) = line
-            poly_coords = [[float(x), float(y)] for x, y in poly]
-            output.append({"text": text, "box": poly_coords})
+
+        for poly, text, conf in zip(raw_results["rec_polys"], raw_results["rec_texts"], raw_results["rec_scores"]):
+            if conf > 0.8:
+                output.append({"text": text, "box": poly})
 
         return output
 
@@ -121,8 +122,12 @@ async def ocr_endpoint(file: UploadFile):
         img.save(tmp_path)
 
         results = ocr_worker.predict(tmp_path)
+        for r in results:
+            if isinstance(r.get("box"), np.ndarray):
+                r["box"] = r["box"].tolist()
         return JSONResponse(content={"results": results})
     except Exception as e:
+        print("Error during OCR processing:", str(e))
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 # ----------------------------
@@ -130,4 +135,4 @@ async def ocr_endpoint(file: UploadFile):
 # ----------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("image_translator.ocr.ocr_worker:app", host="127.0.0.1", port=8001, reload=False)
+    uvicorn.run("image_translator.ocr.ocr_worker:app", host="127.0.0.1", port=8001, reload=False, log_level="debug")

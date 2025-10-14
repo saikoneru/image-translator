@@ -4,6 +4,8 @@ from fastapi.responses import StreamingResponse
 import httpx
 from PIL import Image
 import io, base64
+import json
+from utils import merge_translations, draw_ocr_polys
 
 app = FastAPI(title="Image Translator Gateway")
 
@@ -23,40 +25,50 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
     img_bytes = await file.read()
 
     async with httpx.AsyncClient() as client:
-        print("Dummy processing pipeline triggered...")
-        # -- In a real pipeline, you'd call the worker services here --
-        # ocr_resp = await client.post(WORKER_URLS["ocr"], files={"file": ("image.png", img_bytes)})
-        # ocr_results = ocr_resp.json()["results"]
+        ocr_resp = await client.post(WORKER_URLS["ocr"], files={"file": ("image.png", img_bytes)})
+        ocr_results = ocr_resp.json()["results"]
 
-        # seg_resp = await client.post(WORKER_URLS["segment"], json={"ocr_results": ocr_results})
-        # merged = seg_resp.json()["merged"]
+        seg_resp = await client.post(
+            WORKER_URLS["segment"],
+            files={"file": ("image.png", img_bytes)},
+            data={"ocr_results_json": json.dumps(ocr_results)}
+        )
+        seg_data = seg_resp.json()
+        merged_results = seg_data["merged_results"]
 
-        # inpaint_resp = await client.post(
-        #     WORKER_URLS["inpaint"],
-        #     files={"file": ("image.png", img_bytes)},
-        #     data={"boxes": str([r["box"] for r in ocr_results])},
-        # )
-        # masked_image = inpaint_resp.content
+        inpaint_resp = await client.post(
+            WORKER_URLS["inpaint"],
+            files={"file": ("image.png", img_bytes)},
+            data={"boxes_json": json.dumps([r["box"] for r in ocr_results])}
+        )
 
-        # trans_resp = await client.post(
-        #     WORKER_URLS["translate"],
-        #     json={"texts": [m["merged_text"] for m in merged], "src": src_lang, "tgt": tgt_lang},
-        # )
-        # translations = trans_resp.json()["translations"]
+        inpaint_data = inpaint_resp.json()
+        inpainted_image_b64 = inpaint_data["inpainted_image_base64"]
+        inpainted_image = Image.open(io.BytesIO(base64.b64decode(inpainted_image_b64)))
 
-        # draw_resp = await client.post(
-        #     WORKER_URLS["draw"],
-        #     files={"file": ("image.png", masked_image)},
-        #     data={"ocr_results": str(merged)},
-        # )
-        # final_img = draw_resp.content
+        trans_resp = await client.post(
+            WORKER_URLS["translate"],
+            data={
+                "texts_json": json.dumps([res["merged_text"] for res in merged_results]),
+                "src_lang": src_lang,
+                "tgt_lang": tgt_lang,
+            },
+        )
+        translations = trans_resp.json()["translations"]
+        
 
-        # Dummy behavior — just convert uploaded bytes into a PIL image
+        for entry in merged_results:
+            entry["merged_text"] = translations.pop(0) if translations else ""
+
+        ocr_trans_results = merge_translations(merged_results, ocr_results)
+
+        
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        trans_image = draw_ocr_polys(inpainted_image.copy(), ocr_trans_results, image)
 
     # You cannot return a PIL image directly — it’s not JSON serializable
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    trans_image.save(buf, format="PNG")
     img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return {"image_base64": img_b64}
     
@@ -65,4 +77,4 @@ if __name__ == "__main__":
     import uvicorn
     # Important: specify the module path, not the package
     # Here, `image_translator.pipeline:app` matches the file location inside src/
-    uvicorn.run("image_translator.pipeline:app", host="127.0.0.1", port=8080, reload=True)
+    uvicorn.run("image_translator.pipeline:app", host="127.0.0.1", port=8080, reload=False)
