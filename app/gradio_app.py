@@ -1,25 +1,24 @@
 import gradio as gr
-from image_translator.pipeline import process_image
+import requests
+import base64
+from io import BytesIO
+from PIL import Image
 
-lang_map = {
-    "English": "en", "Chinese": "zh", "French": "fr", "German": "de",
-    "Italian": "it", "Japanese": "ja", "Korean": "ko", "Spanish": "es"
-}
+def process_image(image, src_lang, tgt_lang):
+    files = {"file": open(image, "rb")}
+    data = {"src_lang": src_lang, "tgt_lang": tgt_lang}
+    resp = requests.post("http://127.0.0.1:8080/process", files=files, data=data)
+    img_b64 = resp.json()["image_base64"]
+    img_bytes = base64.b64decode(img_b64)
+    img = Image.open(BytesIO(img_bytes))
+    return img
 
-demo = gr.Interface(
+langs = ["English", "Chinese", "Japanese", "French", "German"]
+
+gr.Interface(
     fn=process_image,
-    inputs=[
-        gr.Image(type="filepath", label="Input Image"),
-        gr.Dropdown(list(lang_map.keys()), label="Source Language"),
-        gr.Dropdown(list(lang_map.keys()), label="Target Language")
-    ],
-    outputs=[
-        gr.Image(type="pil", label="Masked Image"),
-        gr.Image(type="pil", label="Translated Image")
-    ],
-    title="Image Translator",
-    description="Performs OCR, inpainting, translation, and overlay."
-)
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=8080)
+    inputs=[gr.Image(type="filepath"), gr.Dropdown(langs), gr.Dropdown(langs)],
+    outputs=gr.Image(type="pil"),
+    title="Local Multi-Worker Image Translator",
+    description="Each component runs as a separate FastAPI worker."
+).launch()
