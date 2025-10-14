@@ -17,13 +17,13 @@ def merge_translations(merged_ocr_results, ocr_line_results):
 
         # 1️⃣ Single OCR element → direct assignment
         if len(group_ids) == 1:
-            ocr_line_results[group_ids[0] - 1]["merged_text"] = translated_text
+            ocr_line_results[group_ids[0]]["merged_text"] = translated_text
             continue
 
         # 2️⃣ Gather box geometry
         boxes = []
         for i in group_ids:
-            poly = np.array(ocr_line_results[i - 1].get("box", []))
+            poly = np.array(ocr_line_results[i].get("box", []))
             if len(poly) == 0:
                 boxes.append((1, 1))  # Default size if no box
                 continue
@@ -52,7 +52,7 @@ def merge_translations(merged_ocr_results, ocr_line_results):
                 np.argmax(heights) if orientation == "vertical" else np.argmax(widths)
             )
             for j, gid in enumerate(group_ids):
-                ocr_line_results[gid - 1]["merged_text"] = (
+                ocr_line_results[gid]["merged_text"] = (
                     translated_text if j == dominant_idx else ""
                 )
             continue
@@ -65,11 +65,11 @@ def merge_translations(merged_ocr_results, ocr_line_results):
         # Calculate word counts per element
         num_elements = len(group_ids)
         word_counts = np.zeros(num_elements, dtype=int)
-        
+
         # Distribute words proportionally
         for i in range(num_elements):
             word_counts[i] = max(1, int(proportions[i] * total_words))
-        
+
         # Ensure all words are allocated (fix rounding errors)
         allocated = word_counts.sum()
         if allocated < total_words:
@@ -93,7 +93,7 @@ def merge_translations(merged_ocr_results, ocr_line_results):
         for gid, count in zip(group_ids, word_counts):
             chunk = " ".join(trans_words[word_idx:word_idx + count])
             word_idx += count
-            ocr_line_results[gid - 1]["merged_text"] = chunk
+            ocr_line_results[gid]["merged_text"] = chunk
 
     return ocr_line_results
 
@@ -239,5 +239,5 @@ def draw_ocr_polys(image, ocr_results, orig_image, padding=2, font_min=5):
             draw.text((x_text + (text_w - line_w) / 2, y_text + y_offset),
                       line, font=font, fill=color)
             y_offset += font_size
-            
+
     return image
