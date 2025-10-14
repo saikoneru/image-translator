@@ -1,0 +1,17 @@
+[project]
+name = "image-translator"
+version = "0.1.0"
+description = "OCR-based image translation with segmentation and inpainting"
+authors = [{ name="Sai Koneru", email="sai.koneru@kit.edu" }]
+dependencies = [
+    "pillow",
+    "opencv-python",
+    "numpy",
+    "gradio"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+where = ["src"]

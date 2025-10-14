@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: image-translator
+Version: 0.1.0
+Summary: OCR-based image translation with segmentation and inpainting
+Author-email: Sai Koneru <sai.koneru@kit.edu>
+Requires-Dist: pillow
+Requires-Dist: opencv-python
+Requires-Dist: numpy
+Requires-Dist: gradio
