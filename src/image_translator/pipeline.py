@@ -5,7 +5,7 @@ import httpx
 from PIL import Image
 import io, base64
 import json
-from utils import merge_translations, draw_ocr_polys
+from image_translator.utils import merge_translations, draw_ocr_polys
 
 app = FastAPI(title="Image Translator Gateway")
 
