@@ -11,6 +11,14 @@ The main interface (`pipeline.py`) acts as a **gateway** that orchestrates all w
 2. Specify source and target languages.
 3. The gateway calls the workers in sequence and returns the final translated image.
 
+### Running the Pipeline
+
+From the project root, start the API gateway with the following commands:
+
+```bash
+python -m image_translator --port 5000
+```
+
 ---
 
 ## Installation
@@ -24,6 +32,8 @@ cd image-translator
 pip install -r requirements.txt
 pip install -e .
 ```
+
+
 
 ## Overview
 
