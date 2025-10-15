@@ -10,10 +10,10 @@ from utils import merge_translations, draw_ocr_polys
 app = FastAPI(title="Image Translator Gateway")
 
 WORKER_URLS = {
-    "ocr": "http://127.0.0.1:8001/ocr",
-    "segment": "http://127.0.0.1:8002/segment",
-    "inpaint": "http://127.0.0.1:8003/inpaint",
-    "translate": "http://127.0.0.1:8004/translate",
+    "ocr": "http://i13hpc69:8001/ocr",
+    "segment": "http://i13hpc69:8002/segment",
+    "inpaint": "http://i13hpc69:8003/inpaint",
+    "translate": "http://i13hpc69:8004/translate",
 }
 
 @app.post("/process")
@@ -55,14 +55,14 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
             },
         )
         translations = trans_resp.json()["translations"]
-        
+
 
         for entry in merged_results:
             entry["merged_text"] = translations.pop(0) if translations else ""
 
         ocr_trans_results = merge_translations(merged_results, ocr_results)
 
-        
+
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         trans_image = draw_ocr_polys(inpainted_image.copy(), ocr_trans_results, image)
 
@@ -71,10 +71,10 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
     trans_image.save(buf, format="PNG")
     img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return {"image_base64": img_b64}
-    
+
 
 if __name__ == "__main__":
     import uvicorn
     # Important: specify the module path, not the package
     # Here, `image_translator.pipeline:app` matches the file location inside src/
-    uvicorn.run("image_translator.pipeline:app", host="127.0.0.1", port=8080, reload=False)
+    uvicorn.run("image_translator.pipeline:app", host="0.0.0.0", port=8080, reload=False)

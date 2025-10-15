@@ -66,7 +66,7 @@ class PaddleOCRModelManager:
                 break
             args, kwargs, result_queue = item
             try:
-                result = model.ocr(*args, **kwargs)
+                result = model.predict(*args, **kwargs)
                 result_queue.put((True, result))
             except Exception as e:
                 result_queue.put((False, e))
@@ -89,8 +89,11 @@ class PaddleOCRWorker(BaseOCRWorker):
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
-            device="gpu"
+            device="gpu",
+            lang = "en",
         )
+        #ocr = PaddleOCR(use_angle_cls=False, lang='en', ocr_version='PP-OCRv4')
+
         return ocr
 
     def predict(self, image_path: str) -> List[Dict]:
@@ -101,6 +104,7 @@ class PaddleOCRWorker(BaseOCRWorker):
         for poly, text, conf in zip(raw_results["rec_polys"], raw_results["rec_texts"], raw_results["rec_scores"]):
             if conf > 0.8:
                 output.append({"text": text, "box": poly})
+
 
         return output
 
@@ -135,4 +139,4 @@ async def ocr_endpoint(file: UploadFile):
 # ----------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001, reload=False, log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=8001, reload=False, log_level="debug")

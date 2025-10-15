@@ -60,4 +60,4 @@ async def inpaint_endpoint(file: UploadFile = File(...), boxes_json: str = Form(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("inpaint_worker:app", host="127.0.0.1", port=8003, reload=False)
+    uvicorn.run("inpaint_worker:app", host="0.0.0.0", port=8003, reload=False)

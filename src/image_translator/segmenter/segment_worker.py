@@ -71,9 +71,7 @@ app = FastAPI(title="Segment Worker")
 # --- Core logic ---
 def merge_boxes_from_groups(ocr_results, groups):
     merged_results = []
-    print(ocr_results)
     for group in groups:
-        print(group)
         group_boxes = [ocr_results[i]["box"] for i in group]
         group_texts = [ocr_results[i]["text"] for i in group]
 
@@ -105,6 +103,7 @@ def segment_boxes(ocr_results, image_bytes):
     image = Image.open(io.BytesIO(image_bytes))
 
     ocr_lines_dict = [{"id": str(i), "text": line["text"]} for i, line in enumerate(ocr_results)]
+
     messages = [
         {
             "role": "user",
@@ -118,11 +117,13 @@ def segment_boxes(ocr_results, image_bytes):
         }
     ]
 
+    print(ocr_lines_dict)
+
     # Preparation for inference
     text = vl_processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    print(text)
+
 
 
     #image_inputs, video_inputs = process_vision_info(messages)
@@ -166,6 +167,7 @@ async def segment_endpoint(
         groups = segment_boxes(ocr_results, image_bytes)
         merged_results = merge_boxes_from_groups(ocr_results, groups)
 
+
         return JSONResponse(content={
             "groups": groups,
             "merged_results": merged_results
@@ -182,4 +184,4 @@ async def segment_endpoint(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8002, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=8002, reload=False)
