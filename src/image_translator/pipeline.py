@@ -33,12 +33,14 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
             "file": ("image.png", img_bytes, "image/png"),  # file
             "ocr_results_json": (None, json.dumps(ocr_results))  # form field
         }
-        
+
         layout_resp = await client.post(WORKER_URLS["layout"], files=multipart_data)
         layout_data = layout_resp.json()
 
+        print(layout_data)
+
         ocr_para_trans_results = []
-        
+
         for ocr_paragraph in layout_data.get("paragraphs", []):
             seg_resp = await client.post(
                 WORKER_URLS["segment"],
