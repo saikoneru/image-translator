@@ -88,11 +88,11 @@ class PaddleOCRWorker(BaseOCRWorker):
         ocr = PaddleOCR(
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
-            use_textline_orientation=False,
+            use_textline_orientation=True,
             device="gpu",
             lang = "en",
         )
-        #ocr = PaddleOCR(use_angle_cls=False, lang='en', ocr_version='PP-OCRv4')
+        #ocr = PaddleOCR(use_angle_cls=True, lang='en', ocr_version='PP-OCRv4')
 
         return ocr
 
@@ -104,7 +104,6 @@ class PaddleOCRWorker(BaseOCRWorker):
         for poly, text, conf in zip(raw_results["rec_polys"], raw_results["rec_texts"], raw_results["rec_scores"]):
             if conf > 0.8:
                 output.append({"text": text, "box": poly})
-
 
         return output
 

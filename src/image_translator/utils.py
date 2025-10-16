@@ -165,18 +165,19 @@ def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
 
     return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
 
-def draw_ocr_polys(image, ocr_results, orig_image, padding=2, font_min=5):
+def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
     """
-    Draw OCR results on an image using polygon boxes and auto color/font sizing.
-    Compatible with Pillow ≥10 (uses textlength instead of deprecated textsize).
-
+    Draw paragraph-level OCR results on an image using bounding polygons.
+    Each paragraph is a list of lines, each line is a dict with:
+        - 'text': original text
+        - 'merged_text': translated/aligned text to draw
+        - 'box': [[x,y], ...]
+    
     Args:
         image: PIL.Image (RGB)
-        ocr_results: list of dicts with keys:
-            - "text": string
-            - "poly": list of (x, y) coordinates
-            - "font": path to font file (optional)
-        padding: inner margin inside polygon box
+        paragraphs: list of paragraphs, each paragraph = list of lines
+        orig_image: original PIL.Image for color extraction
+        padding: inner margin inside paragraph box
         font_min: minimum font size allowed
     Returns:
         PIL.Image with text drawn
@@ -185,59 +186,53 @@ def draw_ocr_polys(image, ocr_results, orig_image, padding=2, font_min=5):
     img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
     orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
 
-    for result in ocr_results:
-        text = str(result.get("merged_text", "")).strip()
-        if not text:
-            continue
-
-        poly = np.array(result.get("box"), dtype=np.float32)
-        font_path = result.get("font", None)
-
-        # Compute bounding box of polygon
-        x_min, y_min = poly[:, 0].min(), poly[:, 1].min()
-        x_max, y_max = poly[:, 0].max(), poly[:, 1].max()
+    for para in paragraphs:
+        # Merge all line boxes into paragraph bounding box
+        all_pts = np.vstack([np.array(line["box"]) for line in para])
+        x_min, y_min = all_pts[:, 0].min(), all_pts[:, 1].min()
+        x_max, y_max = all_pts[:, 0].max(), all_pts[:, 1].max()
         box_w, box_h = x_max - x_min, y_max - y_min
 
-        color = extract_text_color_from_diff(poly, orig_img_cv, img_cv)
-
-        # Split text into lines if needed
-        lines = text.split("\n")
-        rows = len(lines)
-
-        # Initial font size estimation
-        #font_size = max(font_min, int(box_h / max(rows, 1) * 0.8))
+        num_lines = len(para)
         font_path = "fonts/dejavu-sans.oblique.ttf"
-        font_size = int(min(box_h * 0.9, box_w / max(len(text), 1) * 1.8))
+
+        # Initial font size estimation to fit paragraph height
+        font_size = max(int((box_h - 2 * padding) / num_lines * 0.8), font_min)
         if font_path and os.path.exists(font_path):
             font = ImageFont.truetype(font_path, font_size)
         else:
             font = ImageFont.load_default()
 
-        # Measure text using new Pillow methods
+        # Compute text widths for all lines (use merged_text)
+        text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
+        max_text_width = max(text_widths)
 
-        text_w = max(draw.textlength(line, font=font) for line in lines)
-        text_h = font_size * rows
-
-        # Adjust font size to fit width
-        while (text_w > box_w - 2 * padding or text_h > box_h - 2 * padding) and font_size > font_min:
+        # Reduce font size if any line is too wide
+        while max_text_width > box_w - 2 * padding and font_size > font_min:
             font_size -= 1
             if font_path and os.path.exists(font_path):
                 font = ImageFont.truetype(font_path, font_size)
             else:
                 font = ImageFont.load_default()
-            text_w = max(draw.textlength(line, font=font) for line in lines)
-            text_h = font_size * rows
+            text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
+            max_text_width = max(text_widths)
 
-        # Compute centered position
-        x_text = x_min + (box_w - text_w) / 2
-        y_text = y_min + (box_h - text_h) / 2
+        # Vertical spacing to evenly distribute lines
+        total_text_height = font_size * num_lines
+        y_start = y_min + (box_h - total_text_height) / 2  # center vertically
 
-        # Draw text (multi-line supported)
-        y_offset = 0
-        for line in lines:
-            line_w = draw.textlength(line, font=font)
-            draw.text((x_text + (text_w - line_w) / 2, y_text + y_offset),
-                      line, font=font, fill=color)
-            y_offset += font_size
+        # Draw each line
+        for i, line in enumerate(para):
+            line_text = line.get("merged_text", line["text"])  # use translated/aligned text
+            line_w = draw.textlength(line_text, font=font)
+            x_text = x_min + (box_w - line_w) / 2  # center horizontally
+            y_text = y_start + i * font_size
+
+            # Extract line color from original image polygon
+            poly_pts = np.array(line["box"], dtype=np.int32)
+            color = extract_text_color_from_diff(poly_pts, orig_img_cv, img_cv)
+
+            draw.text((x_text, y_text), line_text, font=font, fill=color)
+
 
     return image

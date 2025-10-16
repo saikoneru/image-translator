@@ -28,6 +28,7 @@ vl_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
 
 vl_processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct", cache_dir=CACHE_DIR,)
 
+
 system_prompt = """
 You are given OCR results extracted from an image.
 Each OCR element has:
