@@ -201,7 +201,8 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         box_w, box_h = x_max - x_min, y_max - y_min
         num_lines = len(para)
 
-        font_path = "fonts/dejavu-sans.oblique.ttf"
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        font_path = os.path.join(BASE_DIR, "fonts", "dejavu-sans.oblique.ttf")
 
         # --- Estimate vertical spacing from OCR lines ---
         line_tops = [np.min(np.array(line["box"])[:, 1]) for line in para]

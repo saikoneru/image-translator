@@ -9,6 +9,8 @@ __pycache__/
 **/*$py.class
 # C extensions
 *.so
+*.png
+**/outputs/
 
 # Distribution / packaging
 .Python
