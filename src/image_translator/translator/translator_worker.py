@@ -46,7 +46,7 @@ def create_batches(texts, batch_size):
 
 
 def generate(texts, src_lang, tgt_lang):
-    text_batches = create_batches(texts, batch_size=8)
+    text_batches = create_batches(texts, batch_size=4)
     hyps = []
 
     for batch in text_batches:
@@ -62,7 +62,7 @@ def generate(texts, src_lang, tgt_lang):
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=256,
+                max_new_tokens=64,
                 do_sample=False,
                 num_beams=5,
                 pad_token_id=tokenizer.eos_token_id
