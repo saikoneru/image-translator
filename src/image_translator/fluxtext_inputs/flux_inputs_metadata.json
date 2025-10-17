@@ -1,0 +1,27 @@
+[
+  {
+    "index": 0,
+    "bbox_rect": [
+      [
+        57,
+        93
+      ],
+      [
+        543,
+        93
+      ],
+      [
+        543,
+        493
+      ],
+      [
+        57,
+        493
+      ]
+    ],
+    "mask_path": "fluxtext_inputs/entry_000_mask.png",
+    "glyph_path": "fluxtext_inputs/entry_000_glyph.png",
+    "prompt_path": "fluxtext_inputs/entry_000_prompt.txt",
+    "merged_text": "10"
+  }
+]

@@ -1,0 +1,1 @@
+Replace the text in the highlighted area with: "10". Preserve the original style, color and background texture as much as possible.

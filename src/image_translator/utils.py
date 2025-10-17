@@ -4,6 +4,7 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont
 import re
 from typing import List, Dict
+import io
 
 def merge_translations(merged_ocr_results, ocr_line_results):
     """
@@ -569,3 +570,68 @@ def merge_translations_alignment(merged_ocr_results, ocr_line_results):
             chunk = " ".join(translated_words[word_idx:word_idx + count])
             ocr_line_results[gid]["merged_text"] = chunk
             word_idx += count
+
+def draw_each_box_and_save(img_bytes, ocr_para_trans_results, output_dir="outputs"):
+    """
+    Draw bounding boxes for OCR/translated text.
+    - Handles both single dict entries and list-of-word entries.
+    - Saves individual cropped images, final overlay image, and combined merged text.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img_cv = np.array(image)
+
+    merged_texts = []
+    final_img = img_cv.copy()
+
+    for i, entry in enumerate(ocr_para_trans_results):
+        # --- Determine if entry is a list (paragraph) or dict (single box)
+        if isinstance(entry, list):
+            # Merge all word boxes into one bounding polygon
+            all_pts = np.vstack([np.array(word["box"]) for word in entry if "box" in word])
+            box = all_pts.astype(np.int32)
+            merged_text = " ".join(
+                [w.get("merged_text", w.get("text", "")) for w in entry if w.get("text")]
+            ).strip()
+        elif isinstance(entry, dict):
+            box = np.array(entry.get("box", []), dtype=np.int32)
+            merged_text = entry.get("merged_text", entry.get("text", "")).strip()
+        else:
+            print(f"⚠️ Skipping invalid entry at index {i}: {type(entry)}")
+            continue
+
+        if box.size == 0:
+            continue
+
+        merged_texts.append(merged_text)
+
+        # Compute bounding rectangle for all points (ensures one clean box)
+        x_min, y_min = np.min(box[:, 0]), np.min(box[:, 1])
+        x_max, y_max = np.max(box[:, 0]), np.max(box[:, 1])
+        rect = np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]], dtype=np.int32)
+
+        # --- Individual image with one box ---
+        img_copy = img_cv.copy()
+        overlay = img_copy.copy()
+        cv2.polylines(img_copy, [rect], isClosed=True, color=(255, 0, 0), thickness=3)
+        cv2.fillPoly(overlay, [rect], (255, 0, 0))
+        # cv2.addWeighted(overlay, 0.15, img_copy, 0.85, 0, img_copy)
+
+        out_path = os.path.join(output_dir, f"box_{i+1:03d}.png")
+        Image.fromarray(img_copy).save(out_path)
+
+        # --- Add to combined overlay image ---
+        cv2.polylines(final_img, [rect], isClosed=True, color=(255, 0, 0), thickness=3)
+
+    # --- Save combined overlay image ---
+    final_path = os.path.join(output_dir, "final.png")
+    Image.fromarray(final_img).save(final_path)
+
+    # --- Save all merged texts ---
+    combined_text = " ".join(merged_texts).strip()
+    text_path = os.path.join(output_dir, "merged_texts.txt")
+    with open(text_path, "w", encoding="utf-8") as f:
+        f.write(combined_text + "\n")
+
+    print(f"✅ Saved {len(merged_texts)} boxes, final.png, and merged_texts.txt in '{output_dir}'")
+    return combined_text, final_path

@@ -5,8 +5,9 @@ import httpx
 from PIL import Image
 import io, base64
 import json
-from image_translator.utils import merge_translations, draw_paragraphs_polys
+from image_translator.utils import merge_translations, draw_paragraphs_polys, draw_each_box_and_save
 import time
+from flux_check import save_flux_inputs
 
 app = FastAPI(title="Image Translator Gateway")
 REQUEST_TIMEOUT = 300
@@ -119,6 +120,9 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
             ocr_para_trans_results.append(ocr_trans_results)
 
         print(f"Merging: {time.time() - start_time}")
+        # # save_flux_inputs(img_bytes, ocr_para_trans_results)
+        # draw_each_box_and_save(img_bytes, ocr_para_trans_results)
+        
         # Step 6: Inpaint
         start_time = time.time()
         inpaint_resp = await client.post(
