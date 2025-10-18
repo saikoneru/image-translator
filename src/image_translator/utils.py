@@ -6,6 +6,95 @@ import re
 from typing import List, Dict
 import io
 
+def proportional_char_split(text, num_segments, proportions=None):
+    """
+    Split text into `num_segments` parts by character count, proportional to geometry.
+    Keeps all characters and ensures each segment has at least one.
+    """
+    text = text.strip()
+    if not text or num_segments <= 1:
+        return [text]
+
+    n_chars = len(text)
+    if proportions is None or len(proportions) != num_segments:
+        proportions = np.ones(num_segments)
+    proportions = np.maximum(proportions, 1e-3)
+    proportions = proportions / proportions.sum()
+
+    # Compute char allocation
+    char_counts = np.maximum(1, (proportions * n_chars).astype(int))
+
+    # Fix rounding mismatch
+    diff = n_chars - char_counts.sum()
+    if diff > 0:
+        for i in np.argsort(-proportions)[:diff]:
+            char_counts[i] += 1
+    elif diff < 0:
+        for i in np.argsort(proportions)[:abs(diff)]:
+            if char_counts[i] > 1:
+                char_counts[i] -= 1
+
+    # Split text
+    parts, idx = [], 0
+    for count in char_counts:
+        parts.append(text[idx:idx + count])
+        idx += count
+    return parts
+
+
+def merge_translations_smart(merged_ocr_results, ocr_line_results):
+    """
+    Geometry-aware translation merger.
+    Always fills each OCR line with part of translated text (no empty lines).
+    """
+    for entry in merged_ocr_results:
+        group_ids = entry.get("group_indices", [])
+        merged_text = entry.get("merged_text", "").strip()
+
+        if not group_ids:
+            continue
+
+        # Ensure 'merged_text' key exists
+        for gid in group_ids:
+            ocr_line_results[gid].setdefault("merged_text", "")
+
+        # If no translation, copy original OCR text
+        if not merged_text:
+            for gid in group_ids:
+                ocr_line_results[gid]["merged_text"] = ocr_line_results[gid].get("text", "")
+            continue
+
+        # Single line → direct assign
+        if len(group_ids) == 1:
+            ocr_line_results[group_ids[0]]["merged_text"] = merged_text
+            continue
+
+        # Multi-line group → get geometry
+        widths, heights = [], []
+        for gid in group_ids:
+            box = np.array(ocr_line_results[gid].get("box", []))
+            if len(box) == 0:
+                widths.append(1)
+                heights.append(1)
+                continue
+            x_min, y_min = box[:, 0].min(), box[:, 1].min()
+            x_max, y_max = box[:, 0].max(), box[:, 1].max()
+            widths.append(max(1, x_max - x_min))
+            heights.append(max(1, y_max - y_min))
+
+        widths, heights = np.array(widths), np.array(heights)
+        orientation = "vertical" if heights.sum() > widths.sum() * 1.5 else "horizontal"
+        proportions = heights if orientation == "vertical" else widths
+
+        # Normalize proportions and split text by character length
+        split_texts = proportional_char_split(merged_text, len(group_ids), proportions)
+
+        # Assign to OCR lines
+        for gid, part in zip(group_ids, split_texts):
+            ocr_line_results[gid]["merged_text"] = part.strip()
+
+    return ocr_line_results
+
 def merge_translations(merged_ocr_results, ocr_line_results):
     """
     Heuristically distribute merged translations back into OCR results.

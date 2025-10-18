@@ -5,7 +5,7 @@ import httpx
 from PIL import Image
 import io, base64
 import json
-from image_translator.utils import merge_translations, draw_paragraphs_polys, draw_each_box_and_save
+from image_translator.utils import merge_translations, merge_translations_smart, draw_paragraphs_polys, draw_each_box_and_save
 import time
 from flux_check import save_flux_inputs
 
@@ -84,6 +84,7 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
         print(f"Collected {len(all_texts_to_translate)} texts for batch translation")
         print(f"Segment: {time.time() - start_time}")
 
+
         # Step 4: Translate ALL texts in a single batch request
         translations = []
         start_time = time.time()
@@ -113,7 +114,7 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
                 entry["merged_text"] = translation
 
             # Merge translations back to OCR results
-            ocr_trans_results = merge_translations(
+            ocr_trans_results = merge_translations_smart(
                 mapping["merged_results"],
                 mapping["ocr_paragraph"]
             )
@@ -122,7 +123,7 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
         print(f"Merging: {time.time() - start_time}")
         # # save_flux_inputs(img_bytes, ocr_para_trans_results)
         # draw_each_box_and_save(img_bytes, ocr_para_trans_results)
-        
+
         # Step 6: Inpaint
         start_time = time.time()
         inpaint_resp = await client.post(

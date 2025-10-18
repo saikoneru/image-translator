@@ -109,5 +109,5 @@ with gr.Blocks(title="Local Translator") as demo:
 
 # ✅ just enable queue (no args)
 demo.queue()
-demo.launch()
+demo.launch(server_name="0.0.0.0", server_port=7868)
 
