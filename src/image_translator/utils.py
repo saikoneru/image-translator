@@ -260,6 +260,8 @@ def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
 def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
     """
     Draw paragraph-level OCR results with consistent alignment (left/center/right).
+    Preserves alpha channel if present.
+    
     Each paragraph is a list of lines, each line is a dict with:
         - 'text': original text
         - 'merged_text': translated/aligned text
@@ -267,17 +269,26 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         - 'words' (optional): list of dicts with 'text' and 'box'
 
     Args:
-        image: PIL.Image (RGB)
+        image: PIL.Image (RGB or RGBA)
         paragraphs: list of paragraphs, each paragraph = list of lines
         orig_image: original PIL.Image for color extraction
         padding: inner margin inside paragraph box
         font_min: minimum font size allowed
     Returns:
-        PIL.Image with text drawn
+        PIL.Image with text drawn (preserves original mode)
     """
     draw = ImageDraw.Draw(image)
-    img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
-    orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
+    
+    # Preserve alpha channel handling
+    has_alpha = image.mode == 'RGBA'
+    
+    # Convert to RGB for color extraction (OpenCV doesn't need alpha for this)
+    if has_alpha:
+        img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
+        orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
+    else:
+        img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
+        orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
 
     for para in paragraphs:
         if not para:
@@ -364,6 +375,10 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
             # --- Extract color ---
             poly_pts = np.array(line["box"], dtype=np.int32)
             color = extract_text_color_from_diff(poly_pts, orig_img_cv, img_cv)
+            
+            # If image has alpha, add full opacity to color
+            if has_alpha and len(color) == 3:
+                color = tuple(list(color) + [255])
 
             draw.text((x_text, y_text), text_to_draw, font=font, fill=color)
 

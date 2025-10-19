@@ -38,6 +38,10 @@ lang_map = {
     "Romanian": "ro", "Turkish": "tr"
 }
 
+# Font path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONT_PATH = os.path.join(BASE_DIR, "fonts", "dejavu-sans.oblique.ttf")
+
 
 class InteractivePipelineState:
     """Store all pipeline state for human-in-the-loop corrections"""
@@ -53,42 +57,45 @@ class InteractivePipelineState:
         self.final_image = None
 
 
-def visualize_ocr_boxes(image, ocr_results, highlight_idx=None):
-    """Draw OCR bounding boxes on image with optional highlighting"""
+def get_points(box):
+    """Convert box coordinates to list of (x, y) tuples"""
+    if not box:
+        return []
+    if isinstance(box[0], (int, float)):
+        return [(box[j], box[j+1]) for j in range(0, len(box), 2) if len(box) >= j+2]
+    else:
+        return [(pt[0], pt[1]) for pt in box if len(pt) == 2]
+
+
+def visualize_ocr_boxes(image, ocr_results):
+    """Draw OCR bounding boxes on image"""
     img = image.copy()
     draw = ImageDraw.Draw(img, 'RGBA')
 
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        font = ImageFont.truetype(FONT_PATH, 14)
     except:
         font = ImageFont.load_default()
 
     for i, result in enumerate(ocr_results):
-        box = result.get("box", [])
-        if len(box) >= 8:
-            points = [(box[j], box[j+1]) for j in range(0, len(box), 2)]
+        points = get_points(result.get("box", []))
 
-            # Highlight selected box
-            if i == highlight_idx:
-                draw.polygon(points, outline=(255, 0, 0), width=4, fill=(255, 0, 0, 80))
-                # Draw text preview
-                text_preview = result.get("text", "")[:30]
-                draw.text((box[0], box[1]-30), f"[{i}] {text_preview}",
-                         fill=(255, 255, 255), font=font,
-                         stroke_width=2, stroke_fill=(255, 0, 0))
-            else:
-                draw.polygon(points, outline=(0, 255, 0), width=2, fill=(0, 255, 0, 30))
-
-            # Draw index number
-            draw.text((box[0]+3, box[1]+3), str(i), fill=(0, 0, 0), font=font)
+        if len(points) >= 4:
+            draw.polygon(points, outline=(0, 255, 0), width=2, fill=(0, 255, 0, 30))
+            draw.text((points[0][0]+3, points[0][1]+3), f"W{i}", fill=(0, 0, 0), font=font)
 
     return img
 
 
 def visualize_layout(image, layout_data, highlight_para=None):
-    """Draw layout detection boxes (paragraphs)"""
+    """Draw layout detection boxes: paragraphs, lines, and words"""
     img = image.copy()
     draw = ImageDraw.Draw(img, 'RGBA')
+
+    try:
+        font = ImageFont.truetype(FONT_PATH, 14)
+    except:
+        font = ImageFont.load_default()
 
     paragraphs = layout_data.get("paragraphs", [])
 
@@ -96,33 +103,75 @@ def visualize_layout(image, layout_data, highlight_para=None):
         if not paragraph:
             continue
 
-        # Get all points from paragraph
+        # Get all word points for paragraph box
         all_pts = []
-        for line in paragraph:
-            box = line.get("box", [])
-            if len(box) >= 8:
-                all_pts.extend([(box[j], box[j+1]) for j in range(0, len(box), 2)])
+        for word in paragraph:
+            pts = get_points(word.get("box", []))
+            all_pts.extend(pts)
 
         if not all_pts:
             continue
 
-        # Draw paragraph bounding box
-        all_pts = np.array(all_pts)
-        x_min, y_min = all_pts[:, 0].min(), all_pts[:, 1].min()
-        x_max, y_max = all_pts[:, 0].max(), all_pts[:, 1].max()
+        all_pts_np = np.array(all_pts)
+        x_min, y_min = all_pts_np[:, 0].min(), all_pts_np[:, 1].min()
+        x_max, y_max = all_pts_np[:, 0].max(), all_pts_np[:, 1].max()
 
-        if i == highlight_para:
-            color = (255, 0, 0)
-            width = 4
-            fill = (255, 0, 0, 50)
-        else:
-            color = (0, 255, 0)
-            width = 2
-            fill = (0, 255, 0, 30)
+        # Paragraph color and style
+        para_color = (0, 0, 255) if i != highlight_para else (255, 0, 0)
+        para_width = 3 if i != highlight_para else 4
+        para_fill = (0, 0, 255, 10) if i != highlight_para else (255, 0, 0, 20)
+        draw.rectangle([x_min, y_min, x_max, y_max], outline=para_color, width=para_width, fill=para_fill)
+        draw.text((x_min, y_min - 20), f"P{i}", fill=para_color, font=font)
 
-        draw.rectangle([x_min, y_min, x_max, y_max],
-                      outline=color, width=width, fill=fill)
-        draw.text((x_min, y_min-20), f"P{i}", fill=color)
+        # Group words into lines based on y-coordinates
+        words_with_pts = [word for word in paragraph if get_points(word.get("box", []))]
+        if not words_with_pts:
+            continue
+
+        # Sort by min y (top)
+        words_with_pts.sort(key=lambda w: min(p[1] for p in get_points(w.get("box", []))))
+
+        # Cluster into lines
+        lines = []
+        current_line = [words_with_pts[0]]
+        for word in words_with_pts[1:]:
+            prev_bottom = max(max(p[1] for p in get_points(w.get("box", []))) for w in current_line)
+            curr_top = min(p[1] for p in get_points(word.get("box", [])))
+            curr_height = max(p[1] for p in get_points(word.get("box", []))) - curr_top
+            if curr_top <= prev_bottom + curr_height * 0.3:  # Allow small gap/overlap
+                current_line.append(word)
+            else:
+                lines.append(current_line)
+                current_line = [word]
+        if current_line:
+            lines.append(current_line)
+
+        # Draw lines
+        for j, line in enumerate(lines):
+            line_pts = []
+            for word in line:
+                line_pts.extend(get_points(word.get("box", [])))
+            if not line_pts:
+                continue
+            line_pts_np = np.array(line_pts)
+            lx_min, ly_min = line_pts_np[:, 0].min(), line_pts_np[:, 1].min()
+            lx_max, ly_max = line_pts_np[:, 0].max(), line_pts_np[:, 1].max()
+
+            line_color = (255, 165, 0)
+            line_width = 2
+            line_fill = (255, 165, 0, 15)
+            draw.rectangle([lx_min, ly_min, lx_max, ly_max], outline=line_color, width=line_width, fill=line_fill)
+            draw.text((lx_min, ly_min - 15), f"L{j}", fill=line_color, font=font)
+
+        # Draw individual words
+        for k, word in enumerate(paragraph):
+            pts = get_points(word.get("box", []))
+            if pts:
+                word_color = (0, 255, 0)
+                word_width = 1
+                word_fill = (0, 255, 0, 10)
+                draw.polygon(pts, outline=word_color, width=word_width, fill=word_fill)
+                draw.text((pts[0][0] + 3, pts[0][1] + 3), f"W{k}", fill=(0, 0, 0), font=font)
 
     return img
 
@@ -211,8 +260,6 @@ def translations_to_dataframe(translations, all_merged_results=None):
         return pd.DataFrame(columns=["ID", "Original", "Translation"])
 
     data = []
-
-    # If we have merged results, show originals
     if all_merged_results:
         all_originals = []
         for merged_results in all_merged_results:
@@ -340,7 +387,9 @@ def create_gradio_app():
             - **Escape** to cancel
 
             ### 🎨 Visual Indicators
-            - 🟢 **Green boxes** = Normal state
+            - 🟢 **Green boxes** = Words
+            - 🟠 **Orange boxes** = Lines
+            - 🔵 **Blue boxes** = Paragraphs
             - 🔴 **Red boxes** = Selected/highlighted
             - **Thicker border** = Currently active
 
@@ -377,7 +426,6 @@ def create_gradio_app():
                     import_trans_btn = gr.Button("📥 Load Translations")
             import_status = gr.Textbox(label="Import Status", interactive=False)
 
-
         # ==================== TAB 1: OCR ====================
         with gr.Tab("1️⃣ OCR Detection"):
             gr.Markdown("### Step 1: Extract text from image")
@@ -403,10 +451,10 @@ def create_gradio_app():
                         )
 
                 with gr.Column(scale=2):
-                    ocr_preview = gr.Image(label="OCR Detection Preview (Green boxes)")
+                    ocr_preview = gr.Image(label="OCR Detection Preview (Green boxes for words)")
 
             gr.Markdown("### ✏️ Edit OCR Results")
-            gr.Markdown("**Option 1: Table editing** - Click cells to edit text or confidence")
+            gr.Markdown("**Table editing** - Click cells to edit text or confidence")
 
             ocr_dataframe = gr.Dataframe(
                 headers=["ID", "Text", "Confidence", "Box (JSON)"],
@@ -421,31 +469,39 @@ def create_gradio_app():
                 update_ocr_btn = gr.Button("✅ Apply OCR Edits", variant="primary")
                 ocr_status = gr.Textbox(label="Status", interactive=False, scale=2)
 
-            with gr.Accordion("🎯 Advanced: Visual Box Selection", open=False):
-                gr.Markdown("**Option 2: Visual selection** - Highlight specific boxes to verify or edit")
-                with gr.Row():
-                    selected_ocr_idx = gr.Number(label="Enter OCR Box ID", value=-1, precision=0)
-                    highlight_ocr_btn = gr.Button("🔍 Highlight Selected Box")
-
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("**Quick Actions for Selected Box:**")
-                        delete_ocr_box_btn = gr.Button("🗑️ Delete Selected Box", variant="stop")
-                        merge_next_btn = gr.Button("⬇️ Merge with Next Box")
-                    with gr.Column():
-                        new_text_for_selected = gr.Textbox(label="New text for selected box", placeholder="Enter new text...")
-                        update_selected_text_btn = gr.Button("✏️ Update Selected Box Text")
-
-        # ==================== TAB 2: LAYOUT & SEGMENTATION ====================
-        with gr.Tab("2️⃣ Layout & Segmentation"):
-            gr.Markdown("### Step 2: Detect paragraphs and segment text for translation")
+        # ==================== TAB 2: LAYOUT DETECTION ====================
+        with gr.Tab("2️⃣ Layout Detection"):
+            gr.Markdown("### Step 2: Detect paragraphs from OCR results")
 
             with gr.Row():
-                with gr.Column():
+                with gr.Column(scale=1):
                     run_layout_btn = gr.Button("📋 Detect Layout", variant="primary", size="lg")
-                    layout_preview = gr.Image(label="Layout Detection (Paragraphs in green)")
 
-                with gr.Column():
+                    # Add statistics panel for layout
+                    with gr.Group():
+                        gr.Markdown("**📊 Layout Statistics**")
+                        layout_stats = gr.Textbox(
+                            label="Layout Stats",
+                            value="No data yet",
+                            interactive=False,
+                            lines=4
+                        )
+
+                with gr.Column(scale=2):
+                    layout_preview = gr.Image(label="Layout Detection Preview (Blue: paragraphs, Orange: lines, Green: words)")
+
+            with gr.Accordion("🎯 Advanced: Paragraph Selection", open=False):
+                gr.Markdown("**Visual paragraph navigation**")
+                with gr.Row():
+                    selected_para_idx = gr.Number(label="Enter Paragraph ID", value=-1, precision=0)
+                    highlight_para_btn = gr.Button("🔍 Highlight Paragraph")
+
+        # ==================== TAB 3: SEGMENTATION ====================
+        with gr.Tab("3️⃣ Segmentation"):
+            gr.Markdown("### Step 3: Segment text for translation")
+
+            with gr.Row():
+                with gr.Column(scale=1):
                     run_segment_btn = gr.Button("✂️ Segment Text", variant="primary", size="lg")
                     segment_info = gr.Textbox(
                         label="Segmentation Summary",
@@ -469,25 +525,19 @@ def create_gradio_app():
                 update_segments_btn = gr.Button("✅ Apply Segmentation Edits", variant="primary")
                 segments_status = gr.Textbox(label="Status", interactive=False, scale=2)
 
-            with gr.Accordion("🎯 Advanced: Paragraph Selection", open=False):
-                gr.Markdown("**Visual paragraph navigation and editing**")
+            with gr.Accordion("🎯 Advanced: Segment Editing", open=False):
                 with gr.Row():
-                    selected_para_idx = gr.Number(label="Enter Paragraph ID", value=-1, precision=0)
-                    highlight_para_btn = gr.Button("🔍 Highlight Paragraph")
-
+                    selected_seg_row = gr.Number(label="Edit Segment (Row number in table)", value=-1, precision=0)
+                    new_seg_text = gr.Textbox(label="New merged text", placeholder="Edit segment text...")
+                    update_seg_text_btn = gr.Button("✏️ Update Segment Text")
                 with gr.Row():
-                    with gr.Column():
-                        selected_seg_row = gr.Number(label="Edit Segment (Row number in table)", value=-1, precision=0)
-                        new_seg_text = gr.Textbox(label="New merged text", placeholder="Edit segment text...")
-                        update_seg_text_btn = gr.Button("✏️ Update Segment Text")
-                    with gr.Column():
-                        gr.Markdown("**Segment Operations:**")
-                        split_seg_btn = gr.Button("✂️ Split Segment at Space (creates 2 segments)")
-                        delete_seg_btn = gr.Button("🗑️ Delete Segment", variant="stop")
+                    gr.Markdown("**Segment Operations:**")
+                    split_seg_btn = gr.Button("✂️ Split Segment at Space (creates 2 segments)")
+                    delete_seg_btn = gr.Button("🗑️ Delete Segment", variant="stop")
 
-        # ==================== TAB 3: TRANSLATION ====================
-        with gr.Tab("3️⃣ Translation"):
-            gr.Markdown("### Step 3: Translate segmented text")
+        # ==================== TAB 4: TRANSLATION ====================
+        with gr.Tab("4️⃣ Translation"):
+            gr.Markdown("### Step 4: Translate segmented text")
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -525,9 +575,9 @@ def create_gradio_app():
                         fix_punctuation_btn = gr.Button("✒️ Fix Punctuation Spacing")
                         capitalize_first_btn = gr.Button("🔠 Capitalize First Letter")
 
-        # ==================== TAB 4: INPAINT & DRAW ====================
-        with gr.Tab("4️⃣ Draw Result"):
-            gr.Markdown("### Step 4: Inpaint original text and draw translations")
+        # ==================== TAB 5: INPAINT & DRAW ====================
+        with gr.Tab("5️⃣ Draw Result"):
+            gr.Markdown("### Step 5: Inpaint original text and draw translations")
 
             with gr.Row():
                 with gr.Column():
@@ -615,110 +665,10 @@ Low confidence (<80%): {low_conf_count}"""
                 return None, [], f"❌ Error: {str(e)}"
 
 
-        def highlight_ocr_box(idx, df, image_bytes):
-            """Highlight a specific OCR box"""
-            try:
-                idx = int(idx)
-                if idx < 0 or state.original_image is None:
-                    return visualize_ocr_boxes(state.original_image, state.ocr_results)
-
-                ocr_results = dataframe_to_ocr_results(df)
-                preview = visualize_ocr_boxes(state.original_image, ocr_results, highlight_idx=idx)
-                return preview
-            except:
-                return visualize_ocr_boxes(state.original_image, state.ocr_results)
-
-
-        def delete_ocr_box(idx, df):
-            """Delete a specific OCR box"""
-            try:
-                idx = int(idx)
-                if idx < 0 or idx >= len(df):
-                    return df, None, "❌ Invalid box ID"
-
-                # Remove row
-                df = df.drop(df.index[idx]).reset_index(drop=True)
-                # Renumber IDs
-                df["ID"] = range(len(df))
-
-                # Update state
-                ocr_results = dataframe_to_ocr_results(df)
-                state.ocr_results = ocr_results
-
-                # Update preview
-                if state.original_image:
-                    preview = visualize_ocr_boxes(state.original_image, ocr_results)
-                    return df, preview, f"✅ Deleted box {idx}"
-
-                return df, None, f"✅ Deleted box {idx}"
-            except Exception as e:
-                return df, None, f"❌ Error: {str(e)}"
-
-
-        def merge_with_next(idx, df):
-            """Merge selected box with next box"""
-            try:
-                idx = int(idx)
-                if idx < 0 or idx >= len(df) - 1:
-                    return df, None, "❌ Cannot merge (invalid ID or last box)"
-
-                # Merge texts
-                current_text = df.loc[idx, "Text"]
-                next_text = df.loc[idx + 1, "Text"]
-                merged_text = f"{current_text} {next_text}".strip()
-
-                # Keep current box coordinates (can be improved to merge boxes)
-                df.loc[idx, "Text"] = merged_text
-
-                # Remove next row
-                df = df.drop(df.index[idx + 1]).reset_index(drop=True)
-                df["ID"] = range(len(df))
-
-                # Update state
-                ocr_results = dataframe_to_ocr_results(df)
-                state.ocr_results = ocr_results
-
-                # Update preview
-                if state.original_image:
-                    preview = visualize_ocr_boxes(state.original_image, ocr_results)
-                    return df, preview, f"✅ Merged boxes {idx} and {idx+1}"
-
-                return df, None, f"✅ Merged boxes"
-            except Exception as e:
-                return df, None, f"❌ Error: {str(e)}"
-
-
-        def update_selected_text(idx, new_text, df):
-            """Update text for selected box"""
-            try:
-                idx = int(idx)
-                if idx < 0 or idx >= len(df):
-                    return df, None, "❌ Invalid box ID"
-
-                if not new_text or not new_text.strip():
-                    return df, None, "❌ Text cannot be empty"
-
-                # Update text
-                df.loc[idx, "Text"] = new_text.strip()
-
-                # Update state
-                ocr_results = dataframe_to_ocr_results(df)
-                state.ocr_results = ocr_results
-
-                # Update preview with highlight
-                if state.original_image:
-                    preview = visualize_ocr_boxes(state.original_image, ocr_results, highlight_idx=idx)
-                    return df, preview, f"✅ Updated box {idx} text"
-
-                return df, None, f"✅ Updated box {idx}"
-            except Exception as e:
-                return df, None, f"❌ Error: {str(e)}"
-
-
         def process_layout(image_bytes, ocr_results):
             """Run layout detection"""
             if not ocr_results or not image_bytes:
-                return None, {}, "❌ Run OCR first"
+                return None, {}, "No data", "❌ Run OCR first"
 
             layout_data = asyncio.run(run_layout_async(image_bytes, ocr_results))
             state.layout_data = layout_data
@@ -726,9 +676,32 @@ Low confidence (<80%): {low_conf_count}"""
             # Visualize
             preview = visualize_layout(state.original_image, layout_data)
 
-            num_paras = len(layout_data.get("paragraphs", []))
+            # Calculate statistics
+            paragraphs = layout_data.get("paragraphs", [])
+            num_paras = len(paragraphs)
+            total_words = sum(len(p) for p in paragraphs)
+            avg_words_per_para = total_words / num_paras if num_paras > 0 else 0
 
-            return preview, layout_data, f"✅ Detected {num_paras} paragraphs"
+            stats = f"""Total paragraphs: {num_paras}
+Total words: {total_words}
+Avg words per paragraph: {avg_words_per_para:.1f}"""
+
+            status = f"✅ Detected {num_paras} paragraphs"
+
+            return preview, layout_data, stats, status
+
+
+        def highlight_paragraph(idx, layout_data):
+            """Highlight a specific paragraph"""
+            try:
+                idx = int(idx)
+                if idx < 0 or state.original_image is None:
+                    return visualize_layout(state.original_image, layout_data)
+
+                preview = visualize_layout(state.original_image, layout_data, highlight_para=idx)
+                return preview
+            except:
+                return visualize_layout(state.original_image, layout_data)
 
 
         def process_segmentation(image_bytes, layout_data):
@@ -881,19 +854,6 @@ Low confidence (<80%): {low_conf_count}"""
                 return df, f"✅ Deleted segment at row {row_idx}"
             except Exception as e:
                 return df, f"❌ Error: {str(e)}"
-
-
-        def highlight_paragraph(idx, layout_data):
-            """Highlight a specific paragraph"""
-            try:
-                idx = int(idx)
-                if idx < 0 or state.original_image is None:
-                    return visualize_layout(state.original_image, layout_data)
-
-                preview = visualize_layout(state.original_image, layout_data, highlight_para=idx)
-                return preview
-            except:
-                return visualize_layout(state.original_image, layout_data)
 
 
         def process_translation(all_merged_results, mapping, tgt):
@@ -1221,34 +1181,10 @@ Low confidence (<80%): {low_conf_count}"""
             outputs=[ocr_preview, state_ocr, ocr_status]
         )
 
-        highlight_ocr_btn.click(
-            highlight_ocr_box,
-            inputs=[selected_ocr_idx, ocr_dataframe, state_image_bytes],
-            outputs=[ocr_preview]
-        )
-
-        delete_ocr_box_btn.click(
-            delete_ocr_box,
-            inputs=[selected_ocr_idx, ocr_dataframe],
-            outputs=[ocr_dataframe, ocr_preview, ocr_status]
-        )
-
-        merge_next_btn.click(
-            merge_with_next,
-            inputs=[selected_ocr_idx, ocr_dataframe],
-            outputs=[ocr_dataframe, ocr_preview, ocr_status]
-        )
-
-        update_selected_text_btn.click(
-            update_selected_text,
-            inputs=[selected_ocr_idx, new_text_for_selected, ocr_dataframe],
-            outputs=[ocr_dataframe, ocr_preview, ocr_status]
-        )
-
         run_layout_btn.click(
             process_layout,
             inputs=[state_image_bytes, state_ocr],
-            outputs=[layout_preview, state_layout, segment_info]
+            outputs=[layout_preview, state_layout, layout_stats, ocr_status]
         )
 
         highlight_para_btn.click(

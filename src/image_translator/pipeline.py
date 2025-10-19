@@ -27,6 +27,11 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
     OCR → Layout → Segment (per paragraph) → Translate (all at once) → Inpaint → Draw
     """
     img_bytes = await file.read()
+    
+    # Detect if original image has transparency
+    original_image = Image.open(io.BytesIO(img_bytes))
+    has_transparency = original_image.mode in ('RGBA', 'LA') or (original_image.mode == 'P' and 'transparency' in original_image.info)
+    print(f"Original image mode: {original_image.mode}, has_transparency: {has_transparency}")
 
     async with httpx.AsyncClient() as client:
         # Step 1: OCR
@@ -36,6 +41,12 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
 
         print(f"OCR: {time.time() - start_time}")
 
+        # If OCR produced nothing (empty list) or every OCR entry has no text, log and return original image
+        if not ocr_results or all(not (r.get("text") and r.get("text").strip()) for r in ocr_results):
+            print("No OCR text detected or all texts empty — returning original image")
+            # Return the raw original image bytes encoded in base64
+            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            return {"image_base64": img_b64}
         # Step 2: Layout Detection
         start_time = time.time()
         multipart_data = {
@@ -135,17 +146,32 @@ async def process_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: s
         inpaint_data = inpaint_resp.json()
         inpainted_image_b64 = inpaint_data["inpainted_image_base64"]
         inpainted_image = Image.open(io.BytesIO(base64.b64decode(inpainted_image_b64)))
+        
+        # Ensure inpainted image has same mode as original
+        if has_transparency and inpainted_image.mode != 'RGBA':
+            inpainted_image = inpainted_image.convert('RGBA')
+        
         print(f"Inpainting: {time.time() - start_time}")
 
         # Step 7: Draw translations on inpainted image
         start_time = time.time()
-        image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        # FIX: Preserve original image mode (RGBA if transparent, RGB otherwise)
+        if has_transparency:
+            image = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+        else:
+            image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        
         trans_image = draw_paragraphs_polys(inpainted_image.copy(), ocr_para_trans_results, image)
         print(f"Drawing: {time.time() - start_time}")
 
-    # Return result as base64
+    # Return result as base64, preserving format
     buf = io.BytesIO()
-    trans_image.save(buf, format="PNG")
+    if has_transparency:
+        trans_image.save(buf, format="PNG")
+        print("Saved output as PNG with transparency")
+    else:
+        trans_image.save(buf, format="PNG")
+    
     img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return {"image_base64": img_b64}
 
