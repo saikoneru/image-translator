@@ -12,7 +12,7 @@ import json
 
 # --- Defaults ---
 DEFAULT_TRANSLATE_URL = "http://i13hpc69:8004/translate"
-DEFAULT_IMAGE_PIPELINE_URL = "http://127.0.0.1:8080/process"
+DEFAULT_IMAGE_PIPELINE_URL = "http://localhost:5000/process"
 MIN_FONT_SIZE = 8
 
 # ---------- Translation API ----------
@@ -101,7 +101,7 @@ def get_text_frame_width(text_frame):
         return parent.width.pt
     return None
 
-def adjust_text_frame(text_frame, original_font_sizes):
+def adjust_text_frame(text_frame):
     parent = getattr(text_frame, "_parent", None)
     if parent is None:
         return
@@ -115,7 +115,7 @@ def adjust_text_frame(text_frame, original_font_sizes):
         overflow = False
         for paragraph in text_frame.paragraphs:
             total_text_len = sum(len(r.text) for r in paragraph.runs)
-            avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font.size) / max(len(paragraph.runs), 1)
+            avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font and r.font.size) / max(len(paragraph.runs), 1)
             if total_text_len * avg_font_size > cur_width:
                 overflow = True
                 for run in paragraph.runs:
@@ -126,7 +126,7 @@ def adjust_text_frame(text_frame, original_font_sizes):
 
     # Expand box width if space available
     if hasattr(parent, "width") and parent.width is not None:
-        text_width_est = sum(len(run.text) * run.font.size.pt for paragraph in text_frame.paragraphs for run in paragraph.runs if run.font.size)
+        text_width_est = sum(len(run.text) * run.font.size.pt for paragraph in text_frame.paragraphs for run in paragraph.runs if run.font and run.font.size)
         if text_width_est > parent.width.pt:
             slide_width_pt = None
             if hasattr(text_frame._parent, "_parent") and hasattr(text_frame._parent._parent, "width") and text_frame._parent._parent.width is not None:
@@ -141,8 +141,8 @@ def adjust_text_frame(text_frame, original_font_sizes):
 
 # ---------- Process text and tables ----------
 def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and_expand=True):
-    original_font_sizes = [run.font.size for paragraph in text_frame.paragraphs for run in paragraph.runs]
     for paragraph in text_frame.paragraphs:
+        print("-- " + paragraph.text)
         lines = paragraph.text.split("\n")
         if not any(lines):
             continue
@@ -157,7 +157,7 @@ def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and
         except Exception as e:
             paragraph.text = " ".join(translations) if is_single_line else "\n".join(translations)
     if shrink_and_expand:
-        adjust_text_frame(text_frame, original_font_sizes)
+        adjust_text_frame(text_frame)
 
 def process_table(table, src_lang, tgt_lang, translate_url, shrink_and_expand=True):
     for r in range(len(table.rows)):
@@ -207,12 +207,16 @@ def translate_image_shape(shape, src_lang, tgt_lang, image_pipeline_url):
 # ---------- Shape traversal ----------
 def process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images=True, shrink_and_expand=True):
     if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+        print("Processing text frame...")
         process_text_frame(shape.text_frame, src_lang, tgt_lang, translate_url, shrink_and_expand)
     elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.TABLE and getattr(shape, "table", None):
+        print("Processing table...")
         process_table(shape.table, src_lang, tgt_lang, translate_url, shrink_and_expand)
     elif getattr(shape, "image", None) is not None and translate_images:
+        print("Processing image...")
         translate_image_shape(shape, src_lang, tgt_lang, image_pipeline_url)
     elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+        print("Processing group shape...")
         for shp in shape.shapes:
             process_shape(shp, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images, shrink_and_expand)
 
