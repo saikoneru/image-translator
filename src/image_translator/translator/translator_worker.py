@@ -73,13 +73,25 @@ def generate(texts, src_lang, tgt_lang):
         )
         hyps.extend(decoded)
 
+    unfiltered_hyps = hyps.copy()
+    
     filtered_hyps = []
     for text, hyp in zip(texts, hyps):
-        if "-" not in text:
+        if "-" not in text and not "–" in text:
             hyp = hyp.replace("-", " ")
+        
+        if (hyp and 
+            hyp.endswith('.') and 
+            text and 
+            not text.rstrip().endswith('.')):
+            hyp = hyp.rstrip('.')
+        
         filtered_hyps.append(hyp)
 
-    return filtered_hyps
+    return {
+        "filtered": filtered_hyps,
+        "unfiltered": unfiltered_hyps
+    }
 
 
 # ---------------------------------------------------
@@ -106,7 +118,10 @@ async def translate_endpoint(
             )
 
         translations = generate(texts, src_lang, tgt_lang)
-        return JSONResponse(content={"translations": translations})
+        return JSONResponse(content={
+            "translations": translations["filtered"],
+            "unfiltered_translations": translations["unfiltered"],
+        })
 
     except Exception as e:
         print("❌ Translation Worker Error:")
