@@ -7,7 +7,7 @@ import io, base64
 import json
 from image_translator.utils import merge_translations, merge_translations_smart, draw_paragraphs_polys, draw_each_box_and_save
 import time
-from flux_check import save_flux_inputs
+from image_translator.flux_check import save_flux_inputs
 
 app = FastAPI(title="Image Translator Gateway")
 REQUEST_TIMEOUT = 300

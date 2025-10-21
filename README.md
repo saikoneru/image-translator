@@ -13,7 +13,7 @@ The main interface (`pipeline.py`) acts as a **gateway** that orchestrates all w
 
 ### Running the Pipeline
 
-From the project root, start the API gateway with the following commands:
+From the project root, start the API gateway with the following command:
 
 ```bash
 python -m image_translator --port 5000
