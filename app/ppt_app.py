@@ -205,29 +205,30 @@ def translate_image_shape(shape, src_lang, tgt_lang, image_pipeline_url):
         print("translate_image_shape failed:", e)
 
 # ---------- Shape traversal ----------
-def process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, shrink_and_expand=True):
+def process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images=True, shrink_and_expand=True):
     if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
         process_text_frame(shape.text_frame, src_lang, tgt_lang, translate_url, shrink_and_expand)
     elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.TABLE and getattr(shape, "table", None):
         process_table(shape.table, src_lang, tgt_lang, translate_url, shrink_and_expand)
-    elif getattr(shape, "image", None) is not None:
+    elif getattr(shape, "image", None) is not None and translate_images:
         translate_image_shape(shape, src_lang, tgt_lang, image_pipeline_url)
     elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
         for shp in shape.shapes:
-            process_shape(shp, src_lang, tgt_lang, translate_url, image_pipeline_url, shrink_and_expand)
+            process_shape(shp, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images, shrink_and_expand)
 
 # ---------- Master/Layout ----------
-def process_slide_master(slide_master, src_lang, tgt_lang, translate_url, image_pipeline_url):
+def process_slide_master(slide_master, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images=True):
     for shape in list(slide_master.shapes):
-        process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, shrink_and_expand=False)
+        process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images, shrink_and_expand=False)
 
-def process_slide_layout(slide_layout, src_lang, tgt_lang, translate_url, image_pipeline_url):
+def process_slide_layout(slide_layout, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images=True):
     for shape in list(slide_layout.shapes):
-        process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, shrink_and_expand=False)
+        process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images, shrink_and_expand=False)
 
 # ---------- PPTX processing ----------
 def translate_pptx_bytes(input_bytes, src_lang, tgt_lang,
                          translate_master=True,
+                         translate_images=True,
                          translate_url=DEFAULT_TRANSLATE_URL,
                          image_pipeline_url=DEFAULT_IMAGE_PIPELINE_URL):
     prs = Presentation(io.BytesIO(input_bytes))
@@ -242,24 +243,24 @@ def translate_pptx_bytes(input_bytes, src_lang, tgt_lang,
                     seen_master_ids.add(master_id)
                     used_masters.append(master)
         for master in used_masters:
-            process_slide_master(master, src_lang, tgt_lang, translate_url, image_pipeline_url)
+            process_slide_master(master, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images)
             for layout in master.slide_layouts:
-                process_slide_layout(layout, src_lang, tgt_lang, translate_url, image_pipeline_url)
+                process_slide_layout(layout, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images)
     for slide in prs.slides:
         for shape in list(slide.shapes):
-            process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, shrink_and_expand=True)
+            process_shape(shape, src_lang, tgt_lang, translate_url, image_pipeline_url, translate_images, shrink_and_expand=True)
     out = io.BytesIO()
     prs.save(out)
     out.seek(0)
     return out.read()
 
 # ---------- Gradio ----------
-def gradio_translate(pptx_file, src_lang, tgt_lang, translate_master, translate_url, image_pipeline_url):
+def gradio_translate(pptx_file, src_lang, tgt_lang, translate_master, translate_images, translate_url, image_pipeline_url):
     if pptx_file is None:
         return None
     with open(pptx_file.name, "rb") as f:
         in_bytes = f.read()
-    out_bytes = translate_pptx_bytes(in_bytes, src_lang, tgt_lang, translate_master, translate_url, image_pipeline_url)
+    out_bytes = translate_pptx_bytes(in_bytes, src_lang, tgt_lang, translate_master, translate_images, translate_url, image_pipeline_url)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx")
     tmp.write(out_bytes)
     tmp.flush()
@@ -278,10 +279,11 @@ if __name__ == "__main__":
             src = gr.Dropdown(langs, value="English", label="Source language")
             tgt = gr.Dropdown(langs, value="German", label="Target language")
         translate_master_checkbox = gr.Checkbox(label="Translate slide masters and layouts", value=True)
+        translate_images_checkbox = gr.Checkbox(label="Translate images", value=True)
         translate_url_input = gr.Textbox(DEFAULT_TRANSLATE_URL, label="Translate service URL")
         image_url_input = gr.Textbox(DEFAULT_IMAGE_PIPELINE_URL, label="Image pipeline URL (/process)")
         btn = gr.Button("Translate PPTX")
         btn.click(fn=gradio_translate,
-                  inputs=[inp, src, tgt, translate_master_checkbox, translate_url_input, image_url_input],
+                  inputs=[inp, src, tgt, translate_master_checkbox, translate_images_checkbox, translate_url_input, image_url_input],
                   outputs=out)
     demo.launch(server_name="0.0.0.0", server_port=7872, debug=False)
