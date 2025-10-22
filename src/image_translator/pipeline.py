@@ -5,19 +5,19 @@ import httpx
 from PIL import Image
 import io, base64
 import json
-from image_translator.utils import merge_translations, merge_translations_smart, draw_paragraphs_polys, draw_each_box_and_save
+from image_translator.utils import merge_translations_smart, draw_paragraphs_polys
 import time
-from image_translator.flux_check import save_flux_inputs
+import os
 
 app = FastAPI(title="Image Translator Gateway")
 REQUEST_TIMEOUT = 300
 
 WORKER_URLS = {
-    "ocr": "http://i13hpc69:8001/ocr",
-    "segment": "http://i13hpc69:8002/segment",
-    "inpaint": "http://i13hpc69:8003/inpaint",
-    "translate": "http://i13hpc69:8004/translate",
-    "layout": "http://i13hpc69:8005/detect_layout",
+    "ocr": os.getenv("OCR_WORKER_URL", "http://i13hpc69:8001/ocr"),
+    "segment": os.getenv("SEGMENT_WORKER_URL", "http://i13hpc69:8002/segment"),
+    "inpaint": os.getenv("INPAINT_WORKER_URL", "http://i13hpc69:8003/inpaint"),
+    "translate": os.getenv("TRANSLATE_WORKER_URL", "http://i13hpc69:8004/translate"),
+    "layout": os.getenv("LAYOUT_WORKER_URL", "http://i13hpc69:8005/detect_layout"),
 }
 
 @app.post("/process")

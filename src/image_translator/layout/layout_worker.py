@@ -27,6 +27,8 @@ from shapely.geometry import Polygon, Point
 from hi_sam.modeling.build import model_registry
 from hi_sam.modeling.auto_mask_generator import AutoMaskGenerator
 from utils import utilities
+import os
+
 
 # Initialize FastAPI app
 app = FastAPI(title="Hi-SAM Layout Worker", description="Text layout detection with OCR word assignment")
@@ -39,7 +41,7 @@ amg = None
 class LayoutConfig(BaseModel):
     """Configuration for layout detection"""
     model_type: str = "vit_l"
-    checkpoint: str = "pretrained_checkpoint/hi_sam_l.pth"
+    checkpoint: str = "/app/models/hi_sam_l.pth"
     device: str = "cuda"
     total_points: int = 1500
     batch_points: int = 100
@@ -441,12 +443,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Hi-SAM Layout Detection Worker")
     parser.add_argument("--model-type", type=str, default="vit_l", help="Model type")
-    parser.add_argument("--checkpoint", type=str, default="pretrained_checkpoint/hi_sam_l.pth",
+    parser.add_argument("--checkpoint", type=str, default="/app/models/hi_sam_l.pth",
                        help="Path to checkpoint")
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host")
     parser.add_argument("--port", type=int, default=8005, help="Port")
-
+    
     args = parser.parse_args()
 
     # Update config

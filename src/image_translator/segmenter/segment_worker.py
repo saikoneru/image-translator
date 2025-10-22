@@ -7,6 +7,8 @@ import json
 import io
 import traceback
 from wtpsplit import SaT
+import os
+import uvicorn
 
 # --- Model setup ---
 print("Loading SaT Segmenter...")
@@ -289,5 +291,8 @@ async def root():
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002, reload=False)
+    host = os.getenv("WORKER_HOST", "0.0.0.0")
+    port = int(os.getenv("WORKER_PORT", "8002"))
+    log_level = os.getenv("LOG_LEVEL", "debug")
+
+    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)

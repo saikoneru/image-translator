@@ -9,6 +9,8 @@ import io
 from queue import Queue
 from threading import Thread, Event
 import numpy as np
+import os
+import uvicorn
 
 # ----------------------------
 # Abstract OCR Worker Interface
@@ -137,5 +139,8 @@ async def ocr_endpoint(file: UploadFile):
 # Run server
 # ----------------------------
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001, reload=False, log_level="debug")
+    host = os.getenv("WORKER_HOST", "0.0.0.0")
+    port = int(os.getenv("WORKER_PORT", "8001"))
+    log_level = os.getenv("LOG_LEVEL", "debug")
+
+    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)

@@ -1,0 +1,8 @@
+torch
+accelerate
+transformers==4.51.3
+fastapi
+pillow
+numpy
+uvicorn
+python-multipart

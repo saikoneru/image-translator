@@ -1,0 +1,6 @@
+fastapi
+pillow
+numpy
+wtpsplit[onnx-gpu]
+uvicorn
+python-multipart

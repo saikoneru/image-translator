@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # API Gateway / Pipeline orchestrator
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: image-translator-gateway
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+      - ./models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OCR_WORKER_URL=http://ocr-worker:8001/ocr
+      - SEGMENT_WORKER_URL=http://segmenter-worker:8002/segment
+      - INPAINT_WORKER_URL=http://inpainter-worker:8003/inpaint
+      - TRANSLATE_WORKER_URL=http://translator-worker:8004/translate
+      - LAYOUT_WORKER_URL=http://layout-worker:8005/detect_layout
+      - DEBUG=${DEBUG:-false}
+    depends_on:
+      - ocr-worker
+      - segmenter-worker
+      - inpainter-worker
+      - translator-worker
+      - layout-worker
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # OCR Worker (GPU 1)
+  ocr-worker:
+    build:
+      context: .
+      dockerfile: src/image_translator/ocr/Dockerfile
+      args:
+        WORKER_NAME: ocr
+    container_name: image-translator-ocr
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WORKER_PORT=8001
+      - NVIDIA_VISIBLE_DEVICES=1
+    runtime: nvidia
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Segmenter Worker (GPU 0)
+  segmenter-worker:
+    build:
+      context: .
+      dockerfile: src/image_translator/segmenter/Dockerfile
+      args:
+        WORKER_NAME: segmenter
+    container_name: image-translator-segmenter
+    ports:
+      - "8002:8002"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WORKER_PORT=8002
+      - NVIDIA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Inpainting Worker (GPU 0)
+  inpainter-worker:
+    build:
+      context: .
+      dockerfile: src/image_translator/inpainter/Dockerfile
+      args:
+        WORKER_NAME: inpainting
+    container_name: image-translator-inpainting
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WORKER_PORT=8003
+      - NVIDIA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Translation Worker (GPU 1)
+  translator-worker:
+    build:
+      context: .
+      dockerfile: src/image_translator/translator/Dockerfile
+      args:
+        WORKER_NAME: translation
+    container_name: image-translator-translation
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WORKER_PORT=8004
+      - NVIDIA_VISIBLE_DEVICES=1
+    runtime: nvidia
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+  # Layout Worker (GPU 0)
+  layout-worker:
+    build:
+      context: .
+      dockerfile: src/image_translator/layout/Dockerfile
+      args:
+        WORKER_NAME: layout
+    container_name: image-translator-layout
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./models:/app/pretrained_checkpoint
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WORKER_PORT=8005
+      - NVIDIA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    networks:
+      - translator-network
+    restart: unless-stopped
+
+networks:
+  translator-network:
+    driver: bridge
+
+volumes:
+  models:
+  uploads:
+  outputs:

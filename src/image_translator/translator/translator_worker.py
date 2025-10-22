@@ -5,13 +5,15 @@ import torch
 import numpy as np
 import json
 import traceback
+import os
+import uvicorn
 
 app = FastAPI(title="Translation Worker")
 
 # ---------------------------------------------------
 # 🧠 Model Initialization
 # ---------------------------------------------------
-CACHE_DIR = "/export/data1/skoneru/hf_cache"
+CACHE_DIR = "/app/models/"
 MODEL_NAME = "ByteDance-Seed/Seed-X-PPO-7B"
 
 lang_map = {
@@ -133,5 +135,8 @@ async def translate_endpoint(
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8004, reload=False)
+    host = os.getenv("WORKER_HOST", "0.0.0.0")
+    port = int(os.getenv("WORKER_PORT", "8004"))
+    log_level = os.getenv("LOG_LEVEL", "debug")
+
+    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)

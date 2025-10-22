@@ -4,6 +4,8 @@ from simple_lama_inpainting import SimpleLama
 from PIL import Image, ImageDraw
 import numpy as np
 import io, json, base64, traceback
+import os
+import uvicorn
 
 app = FastAPI(title="Inpaint Worker")
 
@@ -59,5 +61,8 @@ async def inpaint_endpoint(file: UploadFile = File(...), boxes_json: str = Form(
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("inpaint_worker:app", host="0.0.0.0", port=8003, reload=False)
+    host = os.getenv("WORKER_HOST", "0.0.0.0")
+    port = int(os.getenv("WORKER_PORT", "8003"))
+    log_level = os.getenv("LOG_LEVEL", "debug")
+
+    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)

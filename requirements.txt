@@ -1,1 +1,7 @@
 git+https://github.com/OscarPellicer/python-pptx.git@fda93da2b644c09dfe2d146f26ec0b8988b66ec8
+PyPDF2
+gradio
+requests
+poppler-utils
+pillow
+fastapi
