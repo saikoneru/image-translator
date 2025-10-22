@@ -72,7 +72,7 @@ cd image-translator
 
 2. Build and start all services:
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 3. Access the API:
@@ -87,55 +87,39 @@ curl -X POST http://localhost:5000/process \
 
 ### Starting All Services
 
+Every worker will download the models from the internet except the Layout worker models. For this, you need to download the models from [HiSAM](https://github.com/ymy-k/Hi-SAM/tree/main?tab=readme-ov-file#pushpin-checkpoints) and put it in `models/` at the root
+directory of the project. Make you sure download the SAM's ViT image encoder mentioned as NOTE in the README.md. After this you can simply build!
+
 ```bash
 # Build and start all containers
-docker-compose up --build
+docker compose up --build
 
 # Run in detached mode
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### Starting Individual Workers
 
 ```bash
 # Start only OCR worker
-docker-compose up ocr-worker
+docker compose up ocr-worker
 
 # Start multiple workers
-docker-compose up ocr-worker segmenter-worker
+docker compose up ocr-worker segmenter-worker
 ```
 
 ### Stopping Services
 
 ```bash
 # Stop all containers
-docker-compose down
+docker compose down
 
 # Stop and remove volumes
-docker-compose down -v
+docker compose down -v
 ```
-
-### Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-# API Gateway
-GATEWAY_PORT=5000
-
-# Worker Ports
-OCR_WORKER_PORT=5001
-SEGMENTER_WORKER_PORT=5002
-INPAINTING_WORKER_PORT=5003
-DRAWER_WORKER_PORT=5004
-
-# Translation API (if using external service)
-TRANSLATION_API_KEY=your_api_key_here
-```
-
 ## 👷 Workers
 
 Each worker is an independent service with its own Docker container. For detailed information about each worker:
@@ -247,9 +231,9 @@ COPY . .
 CMD ["python", "app.py"]
 ```
 
-### Step 4: Update docker-compose.yml
+### Step 4: Update docker compose.yml
 
-Add your worker to `docker-compose.yml`:
+Add your worker to `docker compose.yml`:
 
 ```yaml
 your-worker:
@@ -278,7 +262,7 @@ your_result = requests.post(YOUR_WORKER_URL, json=input_data)
 
 ```bash
 # Build and start your worker
-docker-compose up --build your-worker
+docker compose up --build your-worker
 
 # Test independently
 curl -X POST http://localhost:5005/process \
@@ -344,3 +328,4 @@ python app.py
 ## 📧 Contact
 
 For questions or support, please open an issue on GitHub. We are currently developing
+
