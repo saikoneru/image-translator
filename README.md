@@ -182,7 +182,7 @@ workers/
 │   ├── requirements.txt
 │   ├── README.md
 │   ├── worker.py
-│   └── app.py
+│  
 ```
 
 Example `worker.py`:
@@ -212,6 +212,27 @@ class YourWorker(BaseWorker):
     
     def validate_output(self, output_data: Dict[str, Any]) -> bool:
         return "success" in output_data and "data" in output_data
+
+app = FastAPI(title="Your Custom Worker")
+worker = YourWorker()
+
+@app.post("/custom_process")
+async def custom_endpoint(field1: UploadFile, field2: int):
+    try:
+        ### YOUR LOGIC, modify input###
+        output_data = worker.process(input_Data)
+        return JSONResponse(content=output_data)
+
+    except Exception as e:
+        print("Error during custom processing:", str(e))
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+if __name__ == "__main__":
+    host = os.getenv("WORKER_HOST", "0.0.0.0")
+    port = int(os.getenv("WORKER_PORT", "8010"))
+    log_level = os.getenv("LOG_LEVEL", "debug")
+
+    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)
 ```
 
 ### Step 3: Create Docker Configuration
@@ -328,6 +349,7 @@ python app.py
 ## 📧 Contact
 
 For questions or support, please open an issue on GitHub. We are currently developing
+
 
 
 
