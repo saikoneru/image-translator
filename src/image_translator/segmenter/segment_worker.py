@@ -1,298 +1,215 @@
+"""
+SaT Segment Worker with BaseWorker Interface
+Groups OCR text boxes into translation-ready segments.
+"""
+
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import List, Dict, Any
 from PIL import Image
 import numpy as np
-import json
-import io
-import traceback
+import json, io, traceback, os, uvicorn
+from abc import ABC, abstractmethod
 from wtpsplit import SaT
-import os
-import uvicorn
-
-# --- Model setup ---
-print("Loading SaT Segmenter...")
-# Use ONNX with CUDA for maximum speed (~50% faster than PyTorch)
-try:
-    sat = SaT("sat-3l-sm", ort_providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
-    print("✅ SaT Segmenter loaded with ONNX CUDA acceleration")
-except Exception as e:
-    print(f"⚠️ ONNX CUDA failed ({e}), falling back to PyTorch")
-    import torch
-    sat = SaT("sat-3l-sm")
-    if torch.cuda.is_available():
-        sat.half().to("cuda")
-        print("✅ SaT Segmenter loaded with PyTorch CUDA")
-    else:
-        print("✅ SaT Segmenter loaded with PyTorch CPU")
-
-app = FastAPI(title="SaT Segment Worker")
 
 
-def merge_boxes_from_groups(ocr_results, groups):
-    """
-    Merge OCR results based on grouped indices
-    """
-    merged_results = []
-    for group in groups:
-        if not group:
-            continue
+# ======================================================
+# 🧩 Base Worker Interface
+# ======================================================
+class BaseWorker(ABC):
+    @abstractmethod
+    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        pass
 
-        group_boxes = [ocr_results[i]["box"] for i in group]
-        group_texts = [ocr_results[i]["text"] for i in group]
+    @abstractmethod
+    def validate_input(self, input_data: Dict[str, Any]) -> bool:
+        pass
 
-        # Convert boxes to numpy array for processing
-        all_points = []
-        for box in group_boxes:
-            all_points.extend(box)
-
-        all_points = np.array(all_points)
-        x_min = float(np.min(all_points[:, 0]))
-        y_min = float(np.min(all_points[:, 1]))
-        x_max = float(np.max(all_points[:, 0]))
-        y_max = float(np.max(all_points[:, 1]))
-
-        # Create merged polygon
-        poly = np.array([
-            [x_min, y_min],
-            [x_max, y_min],
-            [x_max, y_max],
-            [x_min, y_max]
-        ], dtype=np.float32)
-
-        merged_results.append({
-            "merged_box": poly.tolist(),
-            "merged_text": " ".join(group_texts),
-            "group_indices": group
-        })
-    return merged_results
+    @abstractmethod
+    def validate_output(self, output_data: Dict[str, Any]) -> bool:
+        pass
 
 
-def detect_titles_and_keywords(ocr_results):
-    """
-    Detect titles and keywords to isolate or normalize
+# ======================================================
+# 🧠 SaT Segment Worker Implementation
+# ======================================================
+class SegmentWorker(BaseWorker):
+    def __init__(self):
+        print("Loading SaT Segmenter...")
+        try:
+            self.sat = SaT("sat-3l-sm", ort_providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+            self.backend = "ONNX CUDA"
+            print("✅ SaT Segmenter loaded with ONNX CUDA acceleration")
+        except Exception as e:
+            print(f"⚠️ ONNX CUDA failed ({e}), falling back to PyTorch")
+            import torch
+            self.sat = SaT("sat-3l-sm")
+            if torch.cuda.is_available():
+                self.sat.half().to("cuda")
+                self.backend = "PyTorch CUDA"
+            else:
+                self.backend = "PyTorch CPU"
+            print(f"✅ SaT Segmenter loaded with {self.backend}")
 
-    Returns:
-        isolated_indices: set of indices that should be kept isolated (Title Case only)
-        normalize_map: dict mapping index -> normalized text (for ALL CAPS normalization)
-    """
-    isolated_indices = set()
-    normalize_map = {}
+    # --------------------------
+    # Validation
+    # --------------------------
+    def validate_input(self, input_data: Dict[str, Any]) -> bool:
+        return "ocr_results" in input_data and isinstance(input_data["ocr_results"], list)
 
-    for i, item in enumerate(ocr_results):
-        text = item.get("text", "").strip()
+    def validate_output(self, output_data: Dict[str, Any]) -> bool:
+        return "groups" in output_data and "merged_results" in output_data
 
-        if not text:
-            continue
-
-        # Check if text has letters
-        has_letters = any(c.isalpha() for c in text)
-        if not has_letters:
-            continue
-
-        # Check if text is ALL UPPERCASE (all letters are uppercase)
-        if text.isupper() and len(text) > 1:
-            # Normalize all caps to Title case (first letter capital, rest lowercase)
-            normalize_map[i] = text.capitalize()
-
-        # Check if first letter of each word is capitalized (Title Case)
-        # But NOT all caps
-        elif not text.isupper():
-            words = text.split()
-            is_title_case = all(
-                word[0].isupper() if word and word[0].isalpha() else True
-                for word in words
-            )
-
-            # If Title Case, isolate it
-            if is_title_case and len(words) >= 1:
-                isolated_indices.add(i)
-
-    return isolated_indices, normalize_map
-
-
-def segment_with_sat(ocr_results, lang_code="en"):
-    """
-    Use SaT to segment OCR results into meaningful groups for translation
-
-    Rules:
-    - ALL CAPS text: normalize to capitalize (first letter capital) for SaT processing
-    - Title Case (First Letter Capital): isolate as separate group
-    - Let SaT infer sentence boundaries
-
-    Args:
-        ocr_results: List of dicts with 'text' and 'box' keys
-        lang_code: Language code for segmentation (e.g., 'en', 'de', 'es')
-
-    Returns:
-        groups: List of lists, where each sublist contains indices to merge
-    """
-    if not ocr_results:
-        return []
-
-    # Filter empty texts
-    valid_indices = [i for i, item in enumerate(ocr_results) if item.get("text", "").strip()]
-    if not valid_indices:
-        return []
-
-    # Detect items that should be isolated and get normalization map
-    isolated_indices, normalize_map = detect_titles_and_keywords(ocr_results)
-
-    # Build full text with character position tracking
-    text_parts = []
-    char_to_index = []  # Maps (start_char, end_char, ocr_index)
-
-    current_char = 0
-    for idx in valid_indices:
-        text = ocr_results[idx]["text"].strip()
-
-        # Apply normalization if needed (ALL CAPS -> capitalize)
-        if idx in normalize_map:
-            text = normalize_map[idx]
-
-        if not text:
-            continue
-
-        # Add space between words
-        if text_parts:
-            char_to_index.append((current_char, current_char + 1, None))  # space marker
-            current_char += 1
-
-        # Track this word's position
-        start_char = current_char
-        end_char = current_char + len(text)
-        text_parts.append(text)
-        char_to_index.append((start_char, end_char, idx))
-        current_char = end_char
-
-    if not text_parts:
-        return [[i] for i in valid_indices]
-
-    # Create full text for SaT
-    full_text = " ".join(text_parts)
-
-    print(f"DEBUG: Full text for SaT:\n{repr(full_text)}")
-
-    # Use SaT to find sentence boundaries
-    try:
-        sentences = list(sat.split(full_text))
-        print(f"DEBUG: SaT sentences: {sentences}")
-    except Exception as e:
-        print(f"SaT split error: {e}, falling back to simple split")
-        import re
-        sentences = re.split(r'[.!?。！？]+\s+', full_text)
-        sentences = [s.strip() for s in sentences if s.strip()]
-
-    # Map sentences back to OCR indices
-    groups = []
-    processed_indices = set()
-
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-
-        # Find where this sentence is in the full text
-        sentence_start = full_text.find(sentence)
-        if sentence_start == -1:
-            continue
-        sentence_end = sentence_start + len(sentence)
-
-        # Find which OCR indices overlap with this sentence
-        group = []
-        for start_char, end_char, idx in char_to_index:
-            if idx is None:  # Skip space markers
+    # --------------------------
+    # Core Logic
+    # --------------------------
+    def merge_boxes_from_groups(self, ocr_results, groups):
+        merged_results = []
+        for group in groups:
+            if not group:
                 continue
-            # Check overlap
-            if start_char < sentence_end and end_char > sentence_start:
-                if idx not in processed_indices:
-                    group.append(idx)
-                    processed_indices.add(idx)
+            group_boxes = [ocr_results[i]["box"] for i in group]
+            group_texts = [ocr_results[i]["text"] for i in group]
 
-        if not group:
-            continue
+            all_points = np.array([pt for box in group_boxes for pt in box])
+            x_min, y_min = np.min(all_points, axis=0)
+            x_max, y_max = np.max(all_points, axis=0)
 
-        # Separate isolated items (Title Case) from regular text
-        isolated_in_group = [idx for idx in group if idx in isolated_indices]
-        regular_in_group = [idx for idx in group if idx not in isolated_indices]
+            poly = np.array([
+                [x_min, y_min],
+                [x_max, y_min],
+                [x_max, y_max],
+                [x_min, y_max]
+            ], dtype=np.float32)
 
-        # Add isolated items as individual groups
-        for iso_idx in sorted(isolated_in_group):
-            groups.append([iso_idx])
+            merged_results.append({
+                "merged_box": poly.tolist(),
+                "merged_text": " ".join(group_texts),
+                "group_indices": group
+            })
+        return merged_results
 
-        # Add regular items as a merged group
-        if regular_in_group:
-            groups.append(sorted(regular_in_group))
+    def detect_titles_and_keywords(self, ocr_results):
+        isolated_indices = set()
+        normalize_map = {}
+        for i, item in enumerate(ocr_results):
+            text = item.get("text", "").strip()
+            if not text:
+                continue
+            if text.isupper() and len(text) > 1:
+                normalize_map[i] = text.capitalize()
+            elif all(w and w[0].isupper() for w in text.split() if w[0].isalpha()):
+                isolated_indices.add(i)
+        return isolated_indices, normalize_map
 
-    # Handle any unprocessed OCR items
-    ungrouped = [idx for idx in valid_indices if idx not in processed_indices]
-    for idx in ungrouped:
-        groups.append([idx])
+    def segment_with_sat(self, ocr_results, lang_code="en"):
+        if not ocr_results:
+            return []
 
-    # Sort groups by first index to maintain reading order
-    groups.sort(key=lambda g: min(g) if g else float('inf'))
+        valid_indices = [i for i, o in enumerate(ocr_results) if o.get("text", "").strip()]
+        if not valid_indices:
+            return []
 
-    return groups
+        isolated_indices, normalize_map = self.detect_titles_and_keywords(ocr_results)
+
+        text_parts = []
+        char_to_index = []
+        current_char = 0
+
+        for idx in valid_indices:
+            text = ocr_results[idx]["text"].strip()
+            if idx in normalize_map:
+                text = normalize_map[idx]
+            if text_parts:
+                char_to_index.append((current_char, current_char + 1, None))
+                current_char += 1
+            start_char, end_char = current_char, current_char + len(text)
+            text_parts.append(text)
+            char_to_index.append((start_char, end_char, idx))
+            current_char = end_char
+
+        full_text = " ".join(text_parts)
+        try:
+            sentences = list(self.sat.split(full_text))
+        except Exception:
+            import re
+            sentences = re.split(r'[.!?。！？]+\s+', full_text)
+
+        groups = []
+        processed = set()
+
+        for sentence in sentences:
+            start = full_text.find(sentence)
+            if start == -1:
+                continue
+            end = start + len(sentence)
+            group = [idx for s, e, idx in char_to_index if idx and s < end and e > start and idx not in processed]
+            if not group:
+                continue
+
+            isolated = [i for i in group if i in isolated_indices]
+            regular = [i for i in group if i not in isolated_indices]
+            for iso in isolated:
+                groups.append([iso])
+            if regular:
+                groups.append(sorted(regular))
+            processed.update(group)
+
+        # Add any unprocessed
+        for idx in valid_indices:
+            if idx not in processed:
+                groups.append([idx])
+
+        groups.sort(key=lambda g: min(g))
+        return groups
+
+    # --------------------------
+    # Unified process()
+    # --------------------------
+    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.validate_input(input_data):
+            raise ValueError("Invalid input for SegmentWorker")
+
+        ocr_results = input_data["ocr_results"]
+        lang_code = input_data.get("lang_code", "en")
+
+        groups = self.segment_with_sat(ocr_results, lang_code)
+        merged_results = self.merge_boxes_from_groups(ocr_results, groups)
+
+        output = {"groups": groups, "merged_results": merged_results, "num_groups": len(groups)}
+        if not self.validate_output(output):
+            raise ValueError("Invalid output from SegmentWorker")
+
+        return output
 
 
-def segment_boxes(ocr_results, image_bytes=None, lang_code="en"):
-    """
-    Segment OCR results using SaT
-    image_bytes is kept for API compatibility but not used
-    """
-    groups = segment_with_sat(ocr_results, lang_code=lang_code)
-    return groups
+# ======================================================
+# 🚀 FastAPI Wrapper
+# ======================================================
+app = FastAPI(title="SaT Segment Worker (BaseWorker)")
+worker = SegmentWorker()
 
 
 @app.post("/segment")
-async def segment_endpoint(
-    file: UploadFile = File(...),
-    ocr_results_json: str = Form(...),
-    lang_code: str = Form(default="en")
-):
-    """
-    Segment OCR results into translation-ready groups
-
-    Args:
-        file: Image file (for API compatibility, not used)
-        ocr_results_json: JSON string of OCR results
-        lang_code: Language code (en, de, es, ja, etc.)
-    """
+async def segment_endpoint(file: UploadFile = File(...), ocr_results_json: str = Form(...), lang_code: str = Form(default="en")):
     try:
         image_bytes = await file.read()
         ocr_results = json.loads(ocr_results_json)
-
-        groups = segment_boxes(ocr_results, image_bytes, lang_code=lang_code)
-        merged_results = merge_boxes_from_groups(ocr_results, groups)
-
-        return JSONResponse(content={
-            "groups": groups,
-            "merged_results": merged_results,
-            "num_groups": len(groups)
-        })
-
+        input_data = {"ocr_results": ocr_results, "lang_code": lang_code, "image_bytes": image_bytes}
+        result = worker.process(input_data)
+        return JSONResponse(content=result)
     except Exception as e:
         print("❌ Segment Worker Error:")
         traceback.print_exc()
-        return JSONResponse(
-            content={"error": str(e), "trace": traceback.format_exc()},
-            status_code=500
-        )
+        return JSONResponse(content={"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
 @app.get("/")
 async def root():
-    """Health check"""
-    return {
-        "status": "SaT Segment Worker running",
-        "model": "sat-3l-sm",
-        "backend": "ONNX CUDA" if hasattr(sat, 'ort_providers') else "PyTorch"
-    }
+    return {"status": "SaT Segment Worker running", "model": "sat-3l-sm", "backend": worker.backend}
 
 
 if __name__ == "__main__":
     host = os.getenv("WORKER_HOST", "0.0.0.0")
     port = int(os.getenv("WORKER_PORT", "8002"))
-    log_level = os.getenv("LOG_LEVEL", "debug")
-
-    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)
+    uvicorn.run(app, host=host, port=port, log_level="debug", reload=False)
