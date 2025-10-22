@@ -291,9 +291,9 @@ Translates text in an image from source to target language.
   "image_base64": "base64_encoded_image",
   }
 }
+```
 
 You will get the base64 encoded translated image.
-```
 
 ### Individual Worker Endpoints
 
@@ -328,4 +328,5 @@ python app.py
 ## 📧 Contact
 
 For questions or support, please open an issue on GitHub. We are currently developing
+
 
