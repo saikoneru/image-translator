@@ -6,8 +6,8 @@ A modular image translation pipeline that translates text inside images while pr
 
 - **Modular Architecture**: Independent workers for OCR, segmentation, inpainting, and translation
 - **Docker-based**: Each worker runs in its own container, avoiding dependency conflicts
-- **Extensible**: Easy to add custom workers or replace existing ones
-- **Language Support**: Translate between multiple languages
+- **Extensible**: Easy to add custom workers or replace existing ones and create new pipelines or frontends using this service
+- **Language Support**: Translate between multiple languages: Simply replace with your desired huggingface translation model in translator worker
 - **Style Preservation**: Maintains original text styling (font size, color, position)
 
 ## 📋 Table of Contents
@@ -328,5 +328,6 @@ python app.py
 ## 📧 Contact
 
 For questions or support, please open an issue on GitHub. We are currently developing
+
 
 
