@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from typing import Dict, Any, List
 from fastapi import FastAPI, UploadFile
 from fastapi.responses import JSONResponse
 from paddleocr import PaddleOCR
@@ -12,31 +12,44 @@ import numpy as np
 import os
 import uvicorn
 
-# ----------------------------
-# Abstract OCR Worker Interface
-# ----------------------------
-class BaseOCRWorker(ABC):
+# =====================================================
+# Base Worker Interface (Unified)
+# =====================================================
+class BaseWorker(ABC):
     @abstractmethod
-    def predict(self, image_path: str) -> List[Dict]:
+    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run OCR on the given image path.
+        Process input and return standardized output.
+
+        Args:
+            input_data: Dictionary with worker-specific input data.
 
         Returns:
-            List[Dict] with keys:
-            - "text": recognized string
-            - "box": 4-point polygon [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+            Dictionary with standardized output format.
         """
         pass
 
-# ----------------------------
-# PaddleOCR Manager (threaded)
-# ----------------------------
+    @abstractmethod
+    def validate_input(self, input_data: Dict[str, Any]) -> bool:
+        """Validate input format"""
+        pass
+
+    @abstractmethod
+    def validate_output(self, output_data: Dict[str, Any]) -> bool:
+        """Validate output format"""
+        pass
+
+
+# =====================================================
+# PaddleOCR Model Manager (Threaded)
+# =====================================================
 class PaddleOCRModelManager:
     def __init__(self, num_workers, model_factory):
         self._model_factory = model_factory
         self._queue = Queue()
         self._workers = []
         self._model_initialized_event = Event()
+
         for _ in range(num_workers):
             worker = Thread(target=self._worker, daemon=True)
             worker.start()
@@ -68,7 +81,7 @@ class PaddleOCRModelManager:
                 break
             args, kwargs, result_queue = item
             try:
-                result = model.predict(*args, **kwargs)
+                result = model.ocr(*args, **kwargs)
                 result_queue.put((True, result))
             except Exception as e:
                 result_queue.put((False, e))
@@ -76,68 +89,98 @@ class PaddleOCRModelManager:
                 self._queue.task_done()
 
 
-# ----------------------------
-# PaddleOCR Worker Implementation
-# ----------------------------
-class PaddleOCRWorker(BaseOCRWorker):
-    def __init__(self, num_workers=1, lang="en"):
+# =====================================================
+# PaddleOCR Worker (Implements BaseWorker)
+# =====================================================
+class PaddleOCRWorker(BaseWorker):
+    def __init__(self, num_workers: int = 1, lang: str = "en"):
         self.ocr_manager = PaddleOCRModelManager(
             num_workers=num_workers,
             model_factory=functools.partial(self._create_model, lang=lang)
         )
 
     def _create_model(self, lang: str):
-        ocr = PaddleOCR(
+        return PaddleOCR(
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=True,
             device="gpu",
-            lang = "en",
+            lang=lang,
         )
-        #ocr = PaddleOCR(use_angle_cls=True, lang='en', ocr_version='PP-OCRv4')
 
-        return ocr
+    # ----------------------
+    # BaseWorker Interface
+    # ----------------------
+    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Run OCR and return standardized results"""
+        if not self.validate_input(input_data):
+            raise ValueError("Invalid input format for OCRWorker")
 
-    def predict(self, image_path: str) -> List[Dict]:
+        image_path = input_data["image_path"]
         raw_results = self.ocr_manager.predict(image_path)[0]
-        output = []
 
-
-        for poly, text, conf in zip(raw_results["rec_polys"], raw_results["rec_texts"], raw_results["rec_scores"]):
+        results = []
+        for poly, text, conf in zip(
+            raw_results["rec_polys"], raw_results["rec_texts"], raw_results["rec_scores"]
+        ):
             if conf > 0.8:
-                output.append({"text": text, "box": poly})
+                results.append({"text": text, "box": poly})
+
+        output = {"results": results}
+        if not self.validate_output(output):
+            raise ValueError("Invalid output format from OCRWorker")
 
         return output
 
-# ----------------------------
+    def validate_input(self, input_data: Dict[str, Any]) -> bool:
+        """Check for required keys and valid image path"""
+        return isinstance(input_data, dict) and "image_path" in input_data and os.path.exists(input_data["image_path"])
+
+    def validate_output(self, output_data: Dict[str, Any]) -> bool:
+        """Check output contains 'results' as a list of dicts"""
+        if not isinstance(output_data, dict):
+            return False
+        results = output_data.get("results", [])
+        return isinstance(results, list) and all(
+            isinstance(r, dict) and "text" in r and "box" in r for r in results
+        )
+
+
+# =====================================================
 # FastAPI App
-# ----------------------------
+# =====================================================
 app = FastAPI(title="PaddleOCR Worker")
 
 ocr_worker = PaddleOCRWorker(num_workers=1, lang="en")
+
 
 @app.post("/ocr")
 async def ocr_endpoint(file: UploadFile):
     try:
         img_bytes = await file.read()
-        # Save temporarily to in-memory BytesIO object for PaddleOCR
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        # PaddleOCR requires a path, so save to temporary in-memory file
+
         tmp_path = "/tmp/tmp_image.png"
         img.save(tmp_path)
 
-        results = ocr_worker.predict(tmp_path)
-        for r in results:
+        input_data = {"image_path": tmp_path}
+        output_data = ocr_worker.process(input_data)
+
+        # Convert numpy arrays to lists
+        for r in output_data["results"]:
             if isinstance(r.get("box"), np.ndarray):
                 r["box"] = r["box"].tolist()
-        return JSONResponse(content={"results": results})
+
+        return JSONResponse(content=output_data)
+
     except Exception as e:
         print("Error during OCR processing:", str(e))
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-# ----------------------------
-# Run server
-# ----------------------------
+
+# =====================================================
+# Run Server
+# =====================================================
 if __name__ == "__main__":
     host = os.getenv("WORKER_HOST", "0.0.0.0")
     port = int(os.getenv("WORKER_PORT", "8001"))
