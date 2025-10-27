@@ -101,46 +101,32 @@ def get_text_frame_width(text_frame):
         return parent.width.pt
     return None
 
-def adjust_text_frame(text_frame):
-    parent = getattr(text_frame, "_parent", None)
-    if parent is None:
-        return
+def check_paragraph_overflow(paragraph, cur_width):
+    """Check if a paragraph has overflow"""
+    total_text_len = sum(len(r.text) for r in paragraph.runs)
+    avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font and r.font.size) / max(len(paragraph.runs), 1)
+    return total_text_len * avg_font_size > cur_width
+
+def check_text_frame_overflows(text_frame):
+    """Check which paragraphs in a text frame have overflow and return their indices"""
     cur_width = get_text_frame_width(text_frame)
     if cur_width is None:
-        return
-    text_frame.auto_size = MSO_AUTO_SIZE.NONE
+        return []
+    
+    overflows = []
+    for i, paragraph in enumerate(text_frame.paragraphs):
+        if check_paragraph_overflow(paragraph, cur_width):
+            overflows.append(i)
+    return overflows
 
-    # Shrink font if overflow
-    for _ in range(20):
-        overflow = False
-        for paragraph in text_frame.paragraphs:
-            total_text_len = sum(len(r.text) for r in paragraph.runs)
-            avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font and r.font.size) / max(len(paragraph.runs), 1)
-            if total_text_len * avg_font_size > cur_width:
-                overflow = True
-                for run in paragraph.runs:
-                    if run.font.size:
-                        run.font.size = Pt(max(run.font.size.pt * 0.9, MIN_FONT_SIZE))
-        if not overflow:
-            break
-
-    # Expand box width if space available
-    if hasattr(parent, "width") and parent.width is not None:
-        text_width_est = sum(len(run.text) * run.font.size.pt for paragraph in text_frame.paragraphs for run in paragraph.runs if run.font and run.font.size)
-        if text_width_est > parent.width.pt:
-            slide_width_pt = None
-            if hasattr(text_frame._parent, "_parent") and hasattr(text_frame._parent._parent, "width") and text_frame._parent._parent.width is not None:
-                slide_width_pt = text_frame._parent._parent.width.pt
-            elif hasattr(parent, "_parent") and hasattr(parent._parent, "width") and parent._parent.width is not None:
-                slide_width_pt = parent._parent.width.pt
-            if slide_width_pt is None:
-                slide_width_pt = parent.width.pt * 2
-            max_width = max(1, slide_width_pt - getattr(parent, "left", Pt(0)).pt)
-            new_width = min(text_width_est, max_width)
-            parent.width = Pt(new_width)
+def adjust_text_frame(text_frame):
+    pass
 
 # ---------- Process text and tables ----------
 def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and_expand=True):
+    overflows_before = check_text_frame_overflows(text_frame)
+    print(f"Paragraphs with overflow BEFORE translation: {overflows_before}")
+    
     for paragraph in text_frame.paragraphs:
         print("-- " + paragraph.text)
         lines = paragraph.text.split("\n")
@@ -156,6 +142,23 @@ def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and
             merge_translated_paragraph_preserve_runs(paragraph, translations, force_single_line=is_single_line)
         except Exception as e:
             paragraph.text = " ".join(translations) if is_single_line else "\n".join(translations)
+    
+    # Check which paragraphs have overflow AFTER text changes
+    overflows_after = check_text_frame_overflows(text_frame)
+    print(f"Paragraphs with overflow AFTER translation: {overflows_after}")
+    
+    # Find new paragraphs that have overflow (weren't overflowing before but are now)
+    new_overflows = [i for i in overflows_after if i not in overflows_before]
+    if new_overflows:
+        print(f"NEW paragraphs with overflow: {new_overflows}")
+        cur_width = get_text_frame_width(text_frame)
+        for i in new_overflows:
+            paragraph = text_frame.paragraphs[i]
+            total_text_len = sum(len(r.text) for r in paragraph.runs)
+            avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font and r.font.size) / max(len(paragraph.runs), 1)
+            print(f"  Paragraph {i}: text_len={total_text_len}, avg_font_size={avg_font_size}, cur_width={cur_width}")
+            print(f"  Text content: '{paragraph.text[:100]}...'" if len(paragraph.text) > 100 else f"  Text content: '{paragraph.text}'")
+    
     if shrink_and_expand:
         adjust_text_frame(text_frame)
 
