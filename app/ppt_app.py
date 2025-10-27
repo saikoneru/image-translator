@@ -10,6 +10,8 @@ from PIL import Image
 import gradio as gr
 import json
 import re
+import os
+import time
 
 # --- Defaults ---
 DEFAULT_TRANSLATE_URL = "http://i13hpc69:8004/translate"
@@ -268,14 +270,25 @@ def translate_pptx_bytes(input_bytes, src_lang, tgt_lang,
 def gradio_translate(pptx_file, src_lang, tgt_lang, translate_master, translate_images, translate_url, image_pipeline_url):
     if pptx_file is None:
         return None
+    try:
+        orig_path = getattr(pptx_file, "name", None) or getattr(pptx_file, "orig_name", None)
+        orig_filename = os.path.basename(orig_path) if orig_path else "presentation.pptx"
+    except Exception:
+        orig_filename = "presentation.pptx"
+    base, ext = os.path.splitext(orig_filename)
+    if not ext:
+        ext = ".pptx"
+    out_filename = f"{base} - {tgt_lang} ({int(time.time())}){ext}"
+    out_dir = tempfile.gettempdir()
+    out_path = os.path.join(out_dir, out_filename)
+
     with open(pptx_file.name, "rb") as f:
         in_bytes = f.read()
     out_bytes = translate_pptx_bytes(in_bytes, src_lang, tgt_lang, translate_master, translate_images, translate_url, image_pipeline_url)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx")
-    tmp.write(out_bytes)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
+
+    with open(out_path, "wb") as f:
+        f.write(out_bytes)
+    return out_path
 
 # ---------- Launch Gradio ----------
 if __name__ == "__main__":
