@@ -9,6 +9,7 @@ from pptx.util import Pt
 from PIL import Image
 import gradio as gr
 import json
+import re
 
 # --- Defaults ---
 DEFAULT_TRANSLATE_URL = "http://i13hpc69:8004/translate"
@@ -91,6 +92,7 @@ def merge_translated_paragraph_preserve_runs(paragraph, translated_lines, force_
 
     for r_idx, parts in run_assignments.items():
         paragraph.runs[r_idx].text = "\n".join(parts) if parts else ""
+        paragraph.runs[r_idx].text = re.sub(r'_x[0-9A-Fa-f]{4}_', ' ', paragraph.runs[r_idx].text)
 
 # ---------- Text frame helpers ----------
 def get_text_frame_width(text_frame):
@@ -142,6 +144,7 @@ def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and
             merge_translated_paragraph_preserve_runs(paragraph, translations, force_single_line=is_single_line)
         except Exception as e:
             paragraph.text = " ".join(translations) if is_single_line else "\n".join(translations)
+            paragraph.text = re.sub(r'_x[0-9A-Fa-f]{4}_', ' ', paragraph.text)
     
     # Check which paragraphs have overflow AFTER text changes
     overflows_after = check_text_frame_overflows(text_frame)
