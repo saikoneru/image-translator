@@ -9,7 +9,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     uvicorn.run(
-        "image_translator.pipeline:app",
+        "image_translator.streaming_pipeline:app",
         host=args.host,
         port=args.port,
         reload=args.reload,

@@ -257,11 +257,12 @@ def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
 
     return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
 
+
 def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
     """
     Draw paragraph-level OCR results with consistent alignment (left/center/right).
     Preserves alpha channel if present.
-    
+
     Each paragraph is a list of lines, each line is a dict with:
         - 'text': original text
         - 'merged_text': translated/aligned text
@@ -278,10 +279,10 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         PIL.Image with text drawn (preserves original mode)
     """
     draw = ImageDraw.Draw(image)
-    
+
     # Preserve alpha channel handling
     has_alpha = image.mode == 'RGBA'
-    
+
     # Convert to RGB for color extraction (OpenCV doesn't need alpha for this)
     if has_alpha:
         img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
@@ -308,11 +309,26 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         line_tops = [np.min(np.array(line["box"])[:, 1]) for line in para]
         line_bottoms = [np.max(np.array(line["box"])[:, 1]) for line in para]
         avg_line_height = np.mean([b - t for t, b in zip(line_tops, line_bottoms)])
-        avg_gap = np.mean(np.diff(sorted(line_tops))) if len(line_tops) > 1 else avg_line_height
-        avg_gap = max(avg_gap, avg_line_height * 1.1)
+
+        # Calculate gaps between lines (spacing between bottom of one line and top of next)
+        if len(line_tops) > 1:
+            sorted_indices = np.argsort(line_tops)
+            gaps = []
+            for i in range(len(sorted_indices) - 1):
+                current_idx = sorted_indices[i]
+                next_idx = sorted_indices[i + 1]
+                gap = line_tops[next_idx] - line_bottoms[current_idx]
+                gaps.append(gap)
+            avg_gap = np.mean(gaps) if gaps else 0
+        else:
+            avg_gap = 0
+
+        # Total spacing per line = line height + gap
+        line_spacing = avg_line_height + avg_gap
 
         # --- Font sizing ---
-        font_size = max(int((box_h - 2 * padding) / num_lines * 0.85), font_min)
+        # Initial font size based on average line height (not total box height)
+        font_size = max(int(avg_line_height * 0.85), font_min)
         if os.path.exists(font_path):
             font = ImageFont.truetype(font_path, font_size)
         else:
@@ -322,8 +338,13 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
         while max(text_widths) > (box_w - 2 * padding) and font_size > font_min:
             font_size -= 1
-            font = ImageFont.truetype(font_path, font_size)
+            font = ImageFont.truetype(font_path, font_size) if os.path.exists(font_path) else ImageFont.load_default()
             text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
+
+        # --- Get actual text bbox for accurate height ---
+        # Use the font to get the actual rendered text height
+        sample_bbox = draw.textbbox((0, 0), "Ay", font=font)  # Use chars with ascenders/descenders
+        actual_text_height = sample_bbox[3] - sample_bbox[1]
 
         # --- Detect paragraph alignment (global, not per line) ---
         left_edges = [np.min(np.array(line["box"])[:, 0]) for line in para]
@@ -337,9 +358,9 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         else:
             paragraph_align = "center"
 
-        # --- Vertical start (centered within box) ---
-        total_text_height = avg_gap * num_lines
-        y_start = y_min + (box_h - total_text_height) / 2 + padding
+        # --- Vertical start ---
+        # Use the actual text height instead of OCR line height for spacing
+        y_current = y_min + padding
 
         # --- Draw each line ---
         for i, line in enumerate(para):
@@ -369,18 +390,28 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
             else:
                 x_text = (x_min + x_max - line_w) / 2
 
-            # --- Y position ---
-            y_text = y_start + i * avg_gap
+            # --- Y position (use line_spacing from OCR) ---
+            if i == 0:
+                # First line: align with original top
+                line_top = np.min(line_box[:, 1])
+                y_text = line_top
+            else:
+                # Subsequent lines: use consistent spacing
+                y_text = y_current
 
             # --- Extract color ---
             poly_pts = np.array(line["box"], dtype=np.int32)
             color = extract_text_color_from_diff(poly_pts, orig_img_cv, img_cv)
-            
+
             # If image has alpha, add full opacity to color
             if has_alpha and len(color) == 3:
                 color = tuple(list(color) + [255])
 
             draw.text((x_text, y_text), text_to_draw, font=font, fill=color)
+
+            # Update y position for next line
+            # Add actual text height plus the original gap
+            y_current = y_text + actual_text_height + avg_gap
 
     return image
 

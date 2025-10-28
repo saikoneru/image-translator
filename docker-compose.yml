@@ -62,6 +62,8 @@ services:
     container_name: image-translator-segmenter
     ports:
       - "8002:8002"
+    volumes:
+      - ./models:/app/models
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8002

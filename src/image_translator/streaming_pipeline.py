@@ -13,6 +13,7 @@ from typing import Optional
 import subprocess
 import tempfile
 import re
+from typing import AsyncGenerator
 
 app = FastAPI(title="Unified Document Translator")
 REQUEST_TIMEOUT = 300
@@ -319,21 +320,92 @@ async def process_slide_layout(slide_layout, src_lang, tgt_lang, client: httpx.A
     for shape in list(slide_layout.shapes):
         await process_shape(shape, src_lang, tgt_lang, client, translate_images)
 
+async def translate_single_slide_to_pdf(
+    slide,
+    src_lang: str,
+    tgt_lang: str,
+    client: httpx.AsyncClient,
+    translate_images: bool = True
+) -> bytes:
+    """
+    Translate a single slide and return it as a 1-page PPTX bytes
+    """
+    # Create a new presentation with just this slide
+    temp_prs = Presentation()
+    temp_prs.slide_width = slide.part.presentation.slide_width
+    temp_prs.slide_height = slide.part.presentation.slide_height
 
-async def translate_pptx_bytes(
+    # Copy slide layout
+    slide_layout = temp_prs.slide_layouts[0]  # Use blank layout
+    new_slide = temp_prs.slides.add_slide(slide_layout)
+
+    # Copy all shapes from original slide
+    for shape in slide.shapes:
+        # Create a copy of the shape in the new slide
+        # This is simplified - you may need more sophisticated shape copying
+        await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+
+    # Actually, better approach: translate in place then extract
+    for shape in list(slide.shapes):
+        await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+
+    # Return the slide's presentation as bytes
+    out = io.BytesIO()
+    slide.part.presentation.save(out)
+    out.seek(0)
+    return out.read()
+
+
+async def convert_pptx_to_pdf(pptx_bytes: bytes) -> bytes:
+    """Convert PPTX bytes to PDF bytes using LibreOffice"""
+    with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp_pptx:
+        tmp_pptx.write(pptx_bytes)
+        tmp_pptx_path = tmp_pptx.name
+
+    tmp_dir = tempfile.mkdtemp()
+
+    try:
+        result = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir',
+             tmp_dir, tmp_pptx_path],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        if result.returncode != 0:
+            raise Exception(f"LibreOffice conversion failed: {result.stderr}")
+
+        pdf_filename = os.path.basename(tmp_pptx_path).replace('.pptx', '.pdf')
+        pdf_path = os.path.join(tmp_dir, pdf_filename)
+
+        with open(pdf_path, 'rb') as pdf_file:
+            pdf_content = pdf_file.read()
+
+        return pdf_content
+    finally:
+        os.unlink(tmp_pptx_path)
+        if os.path.exists(os.path.join(tmp_dir, pdf_filename)):
+            os.unlink(os.path.join(tmp_dir, pdf_filename))
+        os.rmdir(tmp_dir)
+
+
+async def translate_pptx_incremental(
     input_bytes: bytes,
     src_lang: str,
     tgt_lang: str,
     client: httpx.AsyncClient,
     translate_master: bool = True,
     translate_images: bool = True
-) -> bytes:
+) -> AsyncGenerator[bytes, None]:
     """
-    Translate PPTX presentation - text, tables, and images
+    Translate PPTX slide by slide, yielding incremental PDFs
+    Yields: PDF with 1 slide, then PDF with 2 slides, then PDF with 3 slides, etc.
     """
     prs = Presentation(io.BytesIO(input_bytes))
+    total_slides = len(prs.slides)
 
-    # Translate masters and layouts if requested
+    # Translate masters and layouts first if requested
     if translate_master:
         used_masters = []
         seen_master_ids = set()
@@ -350,167 +422,144 @@ async def translate_pptx_bytes(
             for layout in master.slide_layouts:
                 await process_slide_layout(layout, src_lang, tgt_lang, client, translate_images)
 
-    # Translate all slides
-    for slide_idx, slide in enumerate(prs.slides):
-        print(f"Processing slide {slide_idx + 1}/{len(prs.slides)}")
+    # Create a temporary presentation that we'll build incrementally
+    translated_prs = Presentation(io.BytesIO(input_bytes))
+
+    # Translate slides one by one and yield incremental PDFs
+    for slide_idx, slide in enumerate(translated_prs.slides):
+        print(f"Processing slide {slide_idx + 1}/{total_slides}")
+
+        # Translate this slide
         for shape in list(slide.shapes):
             await process_shape(shape, src_lang, tgt_lang, client, translate_images)
 
-    # Save to bytes
-    out = io.BytesIO()
-    prs.save(out)
-    out.seek(0)
-    return out.read()
+        # Save current progress (all slides up to this point)
+        pptx_output = io.BytesIO()
+        translated_prs.save(pptx_output)
+        pptx_output.seek(0)
+        pptx_bytes = pptx_output.read()
+
+        # Convert to PDF
+        pdf_bytes = await convert_pptx_to_pdf(pptx_bytes)
+
+        # Create a boundary marker and yield the PDF
+        boundary = f"\n--SLIDE-{slide_idx + 1}-of-{total_slides}--\n".encode()
+        yield boundary + pdf_bytes
 
 
-# ============ API Endpoints ============
-
-@app.post("/translate/image")
-async def translate_image(
+@app.post("/translate/pptx/stream")
+async def translate_pptx_streaming_endpoint(
     file: UploadFile,
     src_lang: str = Form(...),
     tgt_lang: str = Form(...),
-    return_format: str = Form("base64")  # "base64" or "file"
-):
-    """
-    Translate a single image
-    Returns: JSON with base64 image or binary image file
-    """
-    img_bytes = await file.read()
-
-    async with httpx.AsyncClient() as client:
-        translated_bytes = await translate_image_bytes(img_bytes, src_lang, tgt_lang, client)
-
-    if return_format == "file":
-        return Response(
-            content=translated_bytes,
-            media_type="image/png",
-            headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
-        )
-    else:
-        img_b64 = base64.b64encode(translated_bytes).decode("utf-8")
-        return {"image_base64": img_b64}
-
-
-@app.post("/translate/pptx")
-async def translate_pptx(
-    file: UploadFile,
-    src_lang: str = Form(...),
-    tgt_lang: str = Form(...),
-    output_format: str = Form("pdf"),  # "pptx" or "pdf"
     translate_master: bool = Form(True),
     translate_images: bool = Form(True)
 ):
     """
-    Translate PPTX file - text, tables, and images
-    Returns: Translated PPTX or PDF file
+    Translate PPTX and stream incremental PDFs
+    Each chunk contains a complete PDF with all slides translated so far
+    Format: --SLIDE-N-of-TOTAL--\\n<PDF_BYTES>
     """
     pptx_bytes = await file.read()
 
-    async with httpx.AsyncClient() as client:
-        translated_bytes = await translate_pptx_bytes(
-            pptx_bytes,
-            src_lang,
-            tgt_lang,
-            client,
-            translate_master,
-            translate_images
-        )
+    async def generate():
+        async with httpx.AsyncClient() as client:
+            async for pdf_chunk in translate_pptx_incremental(
+                pptx_bytes,
+                src_lang,
+                tgt_lang,
+                client,
+                translate_master,
+                translate_images
+            ):
+                yield pdf_chunk
 
-    # If PDF output requested, convert PPTX to PDF
-    if output_format.lower() == "pdf":
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp_pptx:
-                tmp_pptx.write(translated_bytes)
-                tmp_pptx_path = tmp_pptx.name
-
-            tmp_dir = tempfile.mkdtemp()
-
-            # Convert PPTX to PDF using LibreOffice
-            result = subprocess.run(
-                ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir',
-                 tmp_dir, tmp_pptx_path],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode != 0:
-                raise Exception(f"LibreOffice conversion failed: {result.stderr}")
-
-            # Read the converted PDF
-            pdf_filename = os.path.basename(tmp_pptx_path).replace('.pptx', '.pdf')
-            pdf_path = os.path.join(tmp_dir, pdf_filename)
-
-            with open(pdf_path, 'rb') as pdf_file:
-                pdf_content = pdf_file.read()
-
-            # Cleanup temp files
-            os.unlink(tmp_pptx_path)
-            os.unlink(pdf_path)
-            os.rmdir(tmp_dir)
-
-            output_filename = file.filename.rsplit('.', 1)[0] + '_translated.pdf'
-            return Response(
-                content=pdf_content,
-                media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename={output_filename}"}
-            )
-
-        except Exception as e:
-            print(f"PDF conversion failed: {e}")
-            # Fallback to PPTX if conversion fails
-            output = io.BytesIO(translated_bytes)
-            return StreamingResponse(
-                output,
-                media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
-            )
-
-    # Return PPTX
-    output = io.BytesIO(translated_bytes)
     return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
+        generate(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename=translated_{file.filename.replace('.pptx', '.pdf')}",
+            "X-Content-Type-Options": "nosniff"
+        }
     )
 
 
-@app.post("/translate/auto")
-async def translate_auto(
+@app.post("/translate/pptx/stream-json")
+async def translate_pptx_streaming_json(
     file: UploadFile,
     src_lang: str = Form(...),
     tgt_lang: str = Form(...),
-    output_format: str = Form("auto"),  # "auto", "pptx", or "pdf" (for pptx files only)
     translate_master: bool = Form(True),
     translate_images: bool = Form(True)
 ):
     """
-    Automatically detect file type and translate accordingly
-    Supports: images (png, jpg, jpeg, gif, bmp), PPTX
-    For PPTX: can output as PPTX or PDF (controlled by output_format)
+    Translate PPTX and stream incremental PDFs as JSON
+    Each message: {"slide": N, "total": M, "pdf_base64": "..."}
     """
-    filename = file.filename.lower()
+    pptx_bytes = await file.read()
 
-    if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-        return await translate_image(file, src_lang, tgt_lang, "file")
-    elif filename.endswith('.pptx'):
-        # Default to PDF for PPTX if auto
-        fmt = "pdf" if output_format == "auto" else output_format
-        return await translate_pptx(file, src_lang, tgt_lang, fmt, translate_master, translate_images)
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type. Supported: images (png, jpg, jpeg, gif, bmp), pptx"
-        )
+    async def generate():
+        async with httpx.AsyncClient() as client:
+            prs = Presentation(io.BytesIO(pptx_bytes))
+            total_slides = len(prs.slides)
+
+            # Translate masters
+            if translate_master:
+                used_masters = []
+                seen_master_ids = set()
+                for slide in prs.slides:
+                    if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'slide_master'):
+                        master = slide.slide_layout.slide_master
+                        master_id = id(master)
+                        if master_id not in seen_master_ids:
+                            seen_master_ids.add(master_id)
+                            used_masters.append(master)
+
+                for master in used_masters:
+                    await process_slide_master(master, src_lang, tgt_lang, client, translate_images)
+                    for layout in master.slide_layouts:
+                        await process_slide_layout(layout, src_lang, tgt_lang, client, translate_images)
+
+            # Translate slides incrementally
+            for slide_idx, slide in enumerate(prs.slides):
+                print(f"Processing slide {slide_idx + 1}/{total_slides}")
+
+                for shape in list(slide.shapes):
+                    await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+
+                # Save and convert to PDF
+                pptx_output = io.BytesIO()
+                prs.save(pptx_output)
+                pptx_output.seek(0)
+
+                pdf_bytes = await convert_pptx_to_pdf(pptx_output.read())
+                pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+                # Yield JSON message
+                message = json.dumps({
+                    "slide": slide_idx + 1,
+                    "total": total_slides,
+                    "pdf_base64": pdf_base64
+                }) + "\n"
+
+                yield message.encode()
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",  # Newline-delimited JSON
+        headers={
+            "Content-Disposition": f"attachment; filename=stream.ndjson",
+            "X-Content-Type-Options": "nosniff"
+        }
+    )
 
 
+# Health check
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "unified-translator"}
+    return {"status": "healthy", "service": "incremental-pdf-translator"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("image_translator.unified_pipeline:app", host="0.0.0.0", port=5000, reload=False)
+    uvicorn.run("image_translator.streaming_pipeline:app", host="0.0.0.0", port=8080, reload=False)

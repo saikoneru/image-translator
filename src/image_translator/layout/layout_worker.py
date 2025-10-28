@@ -49,7 +49,7 @@ class BaseWorker(ABC):
 # ======================================================
 class LayoutConfig(BaseModel):
     model_type: str = "vit_l"
-    checkpoint: str = "/app/models/hi_sam_l.pth"
+    checkpoint: str = "/app/pretrained_checkpoint/hi_sam_l.pth"
     device: str = "cuda"
     total_points: int = 1500
     batch_points: int = 100
