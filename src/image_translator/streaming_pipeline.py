@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import re
 from typing import AsyncGenerator
+from sse_starlette.sse import EventSourceResponse
 
 app = FastAPI(title="Unified Document Translator")
 REQUEST_TIMEOUT = 300
@@ -382,7 +383,8 @@ async def convert_pptx_to_pdf(pptx_bytes: bytes) -> bytes:
         with open(pdf_path, 'rb') as pdf_file:
             pdf_content = pdf_file.read()
 
-        return pdf_content
+        pdf_b64 = base64.b64encode(pdf_content).decode('utf-8')
+        return jsonify({"pptx_b64": pdf_b64})
     finally:
         os.unlink(tmp_pptx_path)
         if os.path.exists(os.path.join(tmp_dir, pdf_filename)):
@@ -553,6 +555,134 @@ async def translate_pptx_streaming_json(
         }
     )
 
+@app.post("/translate/pptx/sse")
+async def translate_pptx_sse(
+    file: UploadFile,
+    src_lang: str = Form(...),
+    tgt_lang: str = Form(...),
+    translate_master: bool = Form(True),
+    translate_images: bool = Form(True)
+):
+    """
+    Translate PPTX and stream incremental PDFs via Server-Sent Events
+    Each event contains: slide number, total slides, and base64 PDF
+    """
+    pptx_bytes = await file.read()
+
+    async def event_generator():
+        async with httpx.AsyncClient() as client:
+            try:
+                # Load presentation to get total slides
+                prs = Presentation(io.BytesIO(pptx_bytes))
+                total_slides = len(prs.slides)
+
+                # Send initial status
+                yield {
+                    "event": "status",
+                    "data": json.dumps({
+                        "status": "started",
+                        "total_slides": total_slides
+                    })
+                }
+
+                # Translate masters if requested
+                if translate_master:
+                    yield {
+                        "event": "status",
+                        "data": json.dumps({
+                            "status": "processing_masters"
+                        })
+                    }
+
+                    used_masters = []
+                    seen_master_ids = set()
+                    for slide in prs.slides:
+                        if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'slide_master'):
+                            master = slide.slide_layout.slide_master
+                            master_id = id(master)
+                            if master_id not in seen_master_ids:
+                                seen_master_ids.add(master_id)
+                                used_masters.append(master)
+
+                    for master in used_masters:
+                        await process_slide_master(master, src_lang, tgt_lang, client, translate_images)
+                        for layout in master.slide_layouts:
+                            await process_slide_layout(layout, src_lang, tgt_lang, client, translate_images)
+
+                # Process slides incrementally
+                for slide_idx, slide in enumerate(prs.slides):
+                    current_slide = slide_idx + 1
+
+                    # Send progress update
+                    yield {
+                        "event": "progress",
+                        "data": json.dumps({
+                            "slide": current_slide,
+                            "total": total_slides,
+                            "status": "translating"
+                        })
+                    }
+
+                    # Translate this slide
+                    for shape in list(slide.shapes):
+                        await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+
+                    # Save current state and convert to PDF
+                    pptx_output = io.BytesIO()
+                    prs.save(pptx_output)
+                    pptx_output.seek(0)
+
+                    pdf_bytes = await convert_pptx_to_pdf(pptx_output.read())
+                    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+                    # Send slide update with PDF
+                    yield {
+                        "event": "slide",
+                        "data": json.dumps({
+                            "slide": current_slide,
+                            "total": total_slides,
+                            "pdf_base64": pdf_base64
+                        })
+                    }
+
+                # Send completion event
+                yield {
+                    "event": "complete",
+                    "data": json.dumps({
+                        "status": "completed",
+                        "total_slides": total_slides
+                    })
+                }
+
+            except Exception as e:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({
+                        "error": str(e)
+                    })
+                }
+
+    return EventSourceResponse(event_generator())
+
+@app.post("/convert/pptx_to_pdf")
+async def convert_pptx_to_pdf_endpoint(file: UploadFile):
+    """
+    Simple endpoint to convert PPTX to PDF (for initial upload)
+    """
+    try:
+        pptx_bytes = await file.read()
+        pdf_bytes = await convert_pptx_to_pdf(pptx_bytes)
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        return {
+            "status": "ok",
+            "pdf_base64": pdf_base64
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }, 500
 
 # Health check
 @app.get("/health")
