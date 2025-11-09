@@ -5,3 +5,4 @@ requests
 poppler-utils
 pillow
 fastapi
+sse-starlette

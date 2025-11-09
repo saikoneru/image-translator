@@ -7,7 +7,7 @@ from PIL import Image
 def process_image(image, src_lang, tgt_lang):
     files = {"file": open(image, "rb")}
     data = {"src_lang": src_lang, "tgt_lang": tgt_lang}
-    resp = requests.post("http://127.0.0.1:5000/process", files=files, data=data)
+    resp = requests.post("http://127.0.0.1:5001//translate/image", files=files, data=data)
     img_b64 = resp.json()["image_base64"]
     img_bytes = base64.b64decode(img_b64)
     img = Image.open(BytesIO(img_bytes))

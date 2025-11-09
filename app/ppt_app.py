@@ -116,7 +116,7 @@ def check_text_frame_overflows(text_frame):
     cur_width = get_text_frame_width(text_frame)
     if cur_width is None:
         return []
-    
+
     overflows = []
     for i, paragraph in enumerate(text_frame.paragraphs):
         if check_paragraph_overflow(paragraph, cur_width):
@@ -130,7 +130,7 @@ def adjust_text_frame(text_frame):
 def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and_expand=True):
     overflows_before = check_text_frame_overflows(text_frame)
     print(f"Paragraphs with overflow BEFORE translation: {overflows_before}")
-    
+
     for paragraph in text_frame.paragraphs:
         print("-- " + paragraph.text)
         lines = paragraph.text.split("\n")
@@ -147,11 +147,11 @@ def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and
         except Exception as e:
             paragraph.text = " ".join(translations) if is_single_line else "\n".join(translations)
             paragraph.text = re.sub(r'_x[0-9A-Fa-f]{4}_', ' ', paragraph.text)
-    
+
     # Check which paragraphs have overflow AFTER text changes
     overflows_after = check_text_frame_overflows(text_frame)
     print(f"Paragraphs with overflow AFTER translation: {overflows_after}")
-    
+
     # Find new paragraphs that have overflow (weren't overflowing before but are now)
     new_overflows = [i for i in overflows_after if i not in overflows_before]
     if new_overflows:
@@ -163,7 +163,7 @@ def process_text_frame(text_frame, src_lang, tgt_lang, translate_url, shrink_and
             avg_font_size = sum(r.font.size.pt for r in paragraph.runs if r.font and r.font.size) / max(len(paragraph.runs), 1)
             print(f"  Paragraph {i}: text_len={total_text_len}, avg_font_size={avg_font_size}, cur_width={cur_width}")
             print(f"  Text content: '{paragraph.text[:100]}...'" if len(paragraph.text) > 100 else f"  Text content: '{paragraph.text}'")
-    
+
     if shrink_and_expand:
         adjust_text_frame(text_frame)
 
@@ -309,4 +309,4 @@ if __name__ == "__main__":
         btn.click(fn=gradio_translate,
                   inputs=[inp, src, tgt, translate_master_checkbox, translate_images_checkbox, translate_url_input, image_url_input],
                   outputs=out)
-    demo.launch(server_name="0.0.0.0", server_port=7872, debug=False)
+    demo.launch(server_name="0.0.0.0", server_port=7896, debug=False)
