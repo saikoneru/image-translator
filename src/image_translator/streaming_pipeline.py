@@ -384,7 +384,7 @@ async def convert_pptx_to_pdf(pptx_bytes: bytes) -> bytes:
             pdf_content = pdf_file.read()
 
         pdf_b64 = base64.b64encode(pdf_content).decode('utf-8')
-        return jsonify({"pptx_b64": pdf_b64})
+        return pdf_b64
     finally:
         os.unlink(tmp_pptx_path)
         if os.path.exists(os.path.join(tmp_dir, pdf_filename)):
@@ -576,6 +576,8 @@ async def translate_pptx_sse(
                 prs = Presentation(io.BytesIO(pptx_bytes))
                 total_slides = len(prs.slides)
 
+                print("Total Slides: {}".format(total_slides))
+
                 # Send initial status
                 yield {
                     "event": "status",
@@ -632,8 +634,7 @@ async def translate_pptx_sse(
                     prs.save(pptx_output)
                     pptx_output.seek(0)
 
-                    pdf_bytes = await convert_pptx_to_pdf(pptx_output.read())
-                    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                    pdf_base64 = await convert_pptx_to_pdf(pptx_output.read())
 
                     # Send slide update with PDF
                     yield {
@@ -653,6 +654,8 @@ async def translate_pptx_sse(
                         "total_slides": total_slides
                     })
                 }
+
+                print("Current Slide {}".format(current_slide))
 
             except Exception as e:
                 yield {
