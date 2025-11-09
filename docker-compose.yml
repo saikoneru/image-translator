@@ -46,7 +46,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8001
-      - NVIDIA_VISIBLE_DEVICES=1
+      - NVIDIA_VISIBLE_DEVICES=${GPU1}
     runtime: nvidia
     networks:
       - translator-network
@@ -67,7 +67,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8002
-      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=${GPU0}
     runtime: nvidia
     networks:
       - translator-network
@@ -88,7 +88,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8003
-      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=${GPU0}
     runtime: nvidia
     networks:
       - translator-network
@@ -109,7 +109,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8004
-      - NVIDIA_VISIBLE_DEVICES=1
+      - NVIDIA_VISIBLE_DEVICES=${GPU1}
     runtime: nvidia
     networks:
       - translator-network
@@ -130,7 +130,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - WORKER_PORT=8005
-      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=${GPU0}
     runtime: nvidia
     networks:
       - translator-network
