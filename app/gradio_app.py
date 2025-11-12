@@ -21,4 +21,4 @@ gr.Interface(
     outputs=gr.Image(type="pil"),
     title="Local Multi-Worker Image Translator",
     description="Each component runs as a separate FastAPI worker."
-).launch(server_name="0.0.0.0", server_port=7868)
+).launch(server_name="0.0.0.0", server_port=7860)

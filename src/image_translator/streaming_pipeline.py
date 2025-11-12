@@ -15,6 +15,7 @@ import tempfile
 import re
 from typing import AsyncGenerator
 from sse_starlette.sse import EventSourceResponse
+import asyncio
 
 app = FastAPI(title="Unified Document Translator")
 REQUEST_TIMEOUT = 300
@@ -561,35 +562,46 @@ async def translate_pptx_sse(
     src_lang: str = Form(...),
     tgt_lang: str = Form(...),
     translate_master: bool = Form(True),
-    translate_images: bool = Form(True)
+    translate_images: bool = Form(True),
+    output_format: str = Form("pdf")
 ):
     """
     Translate PPTX and stream incremental PDFs via Server-Sent Events
-    Each event contains: slide number, total slides, and base64 PDF
+    Each slide event contains: slide number, total slides, and base64 PDF
     """
     pptx_bytes = await file.read()
-
-    def chunk_string(s: str, size: int):
-        """Yield successive chunks of a string."""
-        for i in range(0, len(s), size):
-            yield s[i:i+size]
 
     async def event_generator():
         async with httpx.AsyncClient() as client:
             try:
+                print("🚀 Starting translation process")
                 prs = Presentation(io.BytesIO(pptx_bytes))
                 total_slides = len(prs.slides)
 
                 # Send initial status
-                yield {"event": "status", "data": json.dumps({"status": "started", "total_slides": total_slides})}
-
-                chunk_size = 512 * 1024
+                print(f"📤 Sending status: started with {total_slides} slides")
+                yield {
+                    "event": "status",
+                    "data": json.dumps({
+                        "status": "started",
+                        "total_slides": total_slides
+                    })
+                }
+                # Force flush after each event
+                await asyncio.sleep(0)
 
                 # Translate masters if requested
                 if translate_master:
-                    yield {"event": "status", "data": json.dumps({"status": "processing_masters"})}
+                    print("📤 Sending status: processing_masters")
+                    yield {
+                        "event": "status",
+                        "data": json.dumps({"status": "processing_masters"})
+                    }
+                    await asyncio.sleep(0)
+
                     used_masters = []
                     seen_master_ids = set()
+
                     for slide in prs.slides:
                         if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'slide_master'):
                             master = slide.slide_layout.slide_master
@@ -597,6 +609,7 @@ async def translate_pptx_sse(
                             if master_id not in seen_master_ids:
                                 seen_master_ids.add(master_id)
                                 used_masters.append(master)
+
                     for master in used_masters:
                         await process_slide_master(master, src_lang, tgt_lang, client, translate_images)
                         for layout in master.slide_layouts:
@@ -606,7 +619,17 @@ async def translate_pptx_sse(
                 for slide_idx, slide in enumerate(prs.slides):
                     current_slide = slide_idx + 1
 
-                    yield {"event": "progress", "data": json.dumps({"slide": current_slide, "total": total_slides, "status": "translating"})}
+                    # Send progress event
+                    print(f"📤 Sending progress: slide {current_slide}/{total_slides}")
+                    yield {
+                        "event": "progress",
+                        "data": json.dumps({
+                            "slide": current_slide,
+                            "total": total_slides,
+                            "status": "translating"
+                        })
+                    }
+                    await asyncio.sleep(0)
 
                     # Translate slide shapes
                     for shape in list(slide.shapes):
@@ -616,30 +639,56 @@ async def translate_pptx_sse(
                     pptx_output = io.BytesIO()
                     prs.save(pptx_output)
                     pptx_output.seek(0)
+
+                    print(f"🔄 Converting slide {current_slide} to PDF...")
                     pdf_b64 = await convert_pptx_to_pdf(pptx_output.read())
+                    pdf_size = len(pdf_b64)
+                    print(f"📤 Sending slide {current_slide}, PDF size: {pdf_size:,} chars")
 
-                    # Send PDF in chunks
-                    for idx, chunk in enumerate(chunk_string(pdf_b64, chunk_size)):
-                        yield {
-                            "event": "slide_chunk",
-                            "data": json.dumps({
-                                "slide": current_slide,
-                                "total": total_slides,
-                                "chunk_index": idx,
-                                "chunk_data": chunk
-                            })
-                        }
+                    # Send complete slide with PDF data
+                    yield {
+                        "event": "slide",
+                        "data": json.dumps({
+                            "slide": current_slide,
+                            "total": total_slides,
+                            "file_base64": pdf_b64,
+                            "format": output_format
+                        })
+                    }
+                    # Critical: yield control to flush the event
+                    await asyncio.sleep(0)
+                    print(f"✅ Slide {current_slide} sent successfully")
 
-                    # Indicate slide completion
-                    yield {"event": "slide_complete", "data": json.dumps({"slide": current_slide, "total": total_slides})}
-
-                # Completion event
-                yield {"event": "complete", "data": json.dumps({"status": "completed", "total_slides": total_slides})}
+                # Send completion event
+                print("📤 Sending completion event")
+                yield {
+                    "event": "complete",
+                    "data": json.dumps({
+                        "status": "completed",
+                        "total_slides": total_slides
+                    })
+                }
+                await asyncio.sleep(0)
+                print("✅ Translation process completed")
 
             except Exception as e:
-                yield {"event": "error", "data": json.dumps({"error": str(e)})}
+                print(f"❌ Error in translation: {e}")
+                import traceback
+                traceback.print_exc()
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": str(e)})
+                }
 
-    return EventSourceResponse(event_generator())
+    # CRITICAL: Ensure no buffering with ping and proper headers
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+        ping=10  # Send ping every 10 seconds to keep connection alive
+    )
 # Health check
 @app.get("/health")
 async def health_check():
