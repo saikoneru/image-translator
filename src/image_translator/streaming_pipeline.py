@@ -2,20 +2,12 @@ from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.responses import StreamingResponse, Response
 import httpx
 from PIL import Image
-import io, base64
-import json
-from image_translator.utils import merge_translations_smart, draw_paragraphs_polys
-import time
-import os
+import io, base64, json, time, os, tempfile, subprocess, re, asyncio
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from typing import Optional
-import subprocess
-import tempfile
-import re
-from typing import AsyncGenerator
+from image_translator.utils import merge_translations_smart, draw_paragraphs_polys
 from sse_starlette.sse import EventSourceResponse
-import asyncio
 
 app = FastAPI(title="Unified Document Translator")
 REQUEST_TIMEOUT = 300
@@ -28,491 +20,268 @@ WORKER_URLS = {
     "layout": os.getenv("LAYOUT_WORKER_URL", "http://i13hpc69:8005/detect_layout"),
 }
 
+# ---------------------- IMAGE TRANSLATION ---------------------- #
 
 async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, client: httpx.AsyncClient) -> bytes:
-    """
-    Core image translation logic - returns translated image bytes
-    """
-    # Detect if original image has transparency
-    original_image = Image.open(io.BytesIO(img_bytes))
-    has_transparency = original_image.mode in ('RGBA', 'LA') or (original_image.mode == 'P' and 'transparency' in original_image.info)
-    print(f"Original image mode: {original_image.mode}, has_transparency: {has_transparency}")
+    original = Image.open(io.BytesIO(img_bytes))
+    has_transparency = original.mode in ("RGBA", "LA") or (
+        original.mode == "P" and "transparency" in original.info
+    )
 
-    # Step 1: OCR
-    start_time = time.time()
-    ocr_resp = await client.post(WORKER_URLS["ocr"], files={"file": ("image.png", img_bytes)}, timeout=REQUEST_TIMEOUT)
-    ocr_results = ocr_resp.json()["results"]
-    print(f"OCR: {time.time() - start_time:.2f}s")
+    # OCR
+    ocr = (await client.post(
+        WORKER_URLS["ocr"],
+        files={"file": ("image.png", img_bytes)},
+        timeout=REQUEST_TIMEOUT
+    )).json()["results"]
 
-    # If OCR produced nothing, return original image
-    if not ocr_results or all(not (r.get("text") and r.get("text").strip()) for r in ocr_results):
-        print("No OCR text detected - returning original image")
+    if not ocr or all(not (r.get("text") or "").strip() for r in ocr):
         return img_bytes
 
-    # Step 2: Layout Detection
-    start_time = time.time()
-    multipart_data = {
-        "file": ("image.png", img_bytes, "image/png"),
-        "ocr_results_json": (None, json.dumps(ocr_results))
-    }
-    layout_resp = await client.post(WORKER_URLS["layout"], files=multipart_data, timeout=REQUEST_TIMEOUT)
-    layout_data = layout_resp.json()
-    print(f"Layout: {time.time() - start_time:.2f}s - {len(layout_data.get('paragraphs', []))} paragraphs")
+    # Layout
+    layout = (await client.post(
+        WORKER_URLS["layout"],
+        files={"file": ("image.png", img_bytes),
+               "ocr_results_json": (None, json.dumps(ocr))}
+    )).json()
 
-    # Step 3: Segment all paragraphs and collect texts for batch translation
-    start_time = time.time()
-    all_merged_results = []
-    all_texts_to_translate = []
-    paragraph_segment_mapping = []
+    # Segment and collect all text
+    all_texts = []
+    mappings = []
 
-    for para_idx, ocr_paragraph in enumerate(layout_data.get("paragraphs", [])):
-        seg_resp = await client.post(
+    for para_idx, ocr_para in enumerate(layout.get("paragraphs", [])):
+        seg = (await client.post(
             WORKER_URLS["segment"],
             files={"file": ("image.png", img_bytes)},
-            data={"ocr_results_json": json.dumps(ocr_paragraph)},
-            timeout=REQUEST_TIMEOUT,
-        )
-        seg_data = seg_resp.json()
-        merged_results = seg_data["merged_results"]
-        all_merged_results.append(merged_results)
+            data={"ocr_results_json": json.dumps(ocr_para)}
+        )).json()
 
-        start_idx = len(all_texts_to_translate)
-        texts = [res["merged_text"] for res in merged_results]
-        all_texts_to_translate.extend(texts)
-        end_idx = len(all_texts_to_translate)
+        merged = seg["merged_results"]
+        start = len(all_texts)
+        all_texts.extend([x["merged_text"] for x in merged])
+        end = len(all_texts)
 
-        paragraph_segment_mapping.append({
-            "para_idx": para_idx,
-            "ocr_paragraph": ocr_paragraph,
-            "start_idx": start_idx,
-            "end_idx": end_idx,
-            "merged_results": merged_results
+        mappings.append({
+            "ocr_para": ocr_para,
+            "merged": merged,
+            "start": start,
+            "end": end
         })
 
-    print(f"Segment: {time.time() - start_time:.2f}s - {len(all_texts_to_translate)} texts collected")
-
-    # Step 4: Translate ALL texts in a single batch request
-    translations = []
-    start_time = time.time()
-    if all_texts_to_translate:
-        trans_resp = await client.post(
+    # Batch translation
+    translated = []
+    if all_texts:
+        translated = (await client.post(
             WORKER_URLS["translate"],
             data={
-                "texts_json": json.dumps(all_texts_to_translate),
+                "texts_json": json.dumps(all_texts),
                 "src_lang": src_lang,
-                "tgt_lang": tgt_lang,
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        translations = trans_resp.json()["translations"]
-        print(f"Translation: {time.time() - start_time:.2f}s - {len(translations)} translations")
+                "tgt_lang": tgt_lang
+            }
+        )).json()["translations"]
 
-    # Step 5: Distribute translations back to paragraphs
-    start_time = time.time()
-    ocr_para_trans_results = []
-    for mapping in paragraph_segment_mapping:
-        para_translations = translations[mapping["start_idx"]:mapping["end_idx"]]
-        for entry, translation in zip(mapping["merged_results"], para_translations):
-            entry["merged_text"] = translation
-        ocr_trans_results = merge_translations_smart(
-            mapping["merged_results"],
-            mapping["ocr_paragraph"]
+    # merge translations
+    merged_paragraphs = []
+    for m in mappings:
+        block = translated[m["start"]:m["end"]]
+        for entry, t in zip(m["merged"], block):
+            entry["merged_text"] = t
+        merged_paragraphs.append(
+            merge_translations_smart(m["merged"], m["ocr_para"])
         )
-        ocr_para_trans_results.append(ocr_trans_results)
-    print(f"Merging: {time.time() - start_time:.2f}s")
 
-    # Step 6: Inpaint
-    start_time = time.time()
-    inpaint_resp = await client.post(
+    # Inpaint
+    inpaint = (await client.post(
         WORKER_URLS["inpaint"],
         files={"file": ("image.png", img_bytes)},
-        data={"boxes_json": json.dumps([r["box"] for r in ocr_results])},
-        timeout=REQUEST_TIMEOUT,
-    )
-    inpaint_data = inpaint_resp.json()
-    inpainted_image_b64 = inpaint_data["inpainted_image_base64"]
-    inpainted_image = Image.open(io.BytesIO(base64.b64decode(inpainted_image_b64)))
+        data={"boxes_json": json.dumps([r["box"] for r in ocr])}
+    )).json()
 
-    if has_transparency and inpainted_image.mode != 'RGBA':
-        inpainted_image = inpainted_image.convert('RGBA')
-    print(f"Inpainting: {time.time() - start_time:.2f}s")
-
-    # Step 7: Draw translations on inpainted image
-    start_time = time.time()
+    inpainted = Image.open(io.BytesIO(base64.b64decode(inpaint["inpainted_image_base64"])))
     if has_transparency:
-        image = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-    else:
-        image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        inpainted = inpainted.convert("RGBA")
 
-    trans_image = draw_paragraphs_polys(inpainted_image.copy(), ocr_para_trans_results, image)
-    print(f"Drawing: {time.time() - start_time:.2f}s")
+    # Draw translations
+    base = original.convert("RGBA" if has_transparency else "RGB")
+    result = draw_paragraphs_polys(inpainted.copy(), merged_paragraphs, base)
 
-    # Return result as bytes
     buf = io.BytesIO()
-    if has_transparency:
-        trans_image.save(buf, format="PNG")
-    else:
-        trans_image.save(buf, format="PNG")
-
+    result.save(buf, format="PNG")
     return buf.getvalue()
 
+# ---------------------- TRANSLATION HELPERS ---------------------- #
 
-# ============ PPTX Translation Functions ============
-
-async def call_translate_api(texts, src_lang, tgt_lang, client: httpx.AsyncClient):
-    """Call translation API with batch of texts"""
+async def call_translate_api(texts, src, tgt, client):
     if not texts:
         return []
-    payload = {"texts_json": json.dumps(texts), "src_lang": src_lang, "tgt_lang": tgt_lang}
-    resp = await client.post(WORKER_URLS["translate"], data=payload, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    resp = await client.post(
+        WORKER_URLS["translate"],
+        data={"texts_json": json.dumps(texts), "src_lang": src, "tgt_lang": tgt}
+    )
     data = resp.json()
-    translations = data.get("translations") or data.get("results") or data.get("translated_texts")
-    if translations is None:
-        if isinstance(data, dict) and len(data) == 1:
-            val = list(data.values())[0]
-            if isinstance(val, str):
-                return [val]
-        raise RuntimeError(f"Unexpected translate API response: {data}")
-    return translations
+    return data.get("translations") or data.get("results") or data.get("translated_texts") or []
 
+def merge_translated_paragraph(paragraph, translated):
+    runs = paragraph.runs
+    if not runs:
+        paragraph.text = "\n".join(translated)
+        return
 
-def merge_translated_paragraph_preserve_runs(paragraph, translated_lines, force_single_line=False):
-    """Merge translations back into paragraph runs while preserving formatting"""
-    original_lines = paragraph.text.split("\n")
-    num_lines = len(original_lines)
+    original = paragraph.text.split("\n")
+    if len(translated) != len(original):
+        translated = [" ".join(translated)] * len(original)
 
-    # Adjust translated lines to match original line count
-    if len(translated_lines) < num_lines:
-        merged_text = " ".join(translated_lines)
-        translated_lines = []
-        start = 0
-        for line in original_lines:
-            line_len = len(line)
-            translated_lines.append(merged_text[start:start+line_len])
-            start += line_len
-        if start < len(merged_text):
-            translated_lines[-1] += merged_text[start:]
-    elif len(translated_lines) > num_lines:
-        merged_text = " ".join(translated_lines)
-        avg_len = len(merged_text) // num_lines
-        translated_lines = [merged_text[i*avg_len:(i+1)*avg_len] for i in range(num_lines)]
-        if len(merged_text) % num_lines:
-            translated_lines[-1] += merged_text[num_lines*avg_len:]
+    # simple replacement: preserve number of lines and runs
+    parts = iter(" ".join(translated))
+    for r in runs:
+        text = r.text
+        r.text = "".join(next(parts, "") for _ in text)
 
-    # Distribute translated lines to runs
-    run_texts = [r.text or "" for r in paragraph.runs]
-    run_assignments = {i: [] for i in range(len(paragraph.runs))}
-    run_idx = 0
-    run_pos = 0
-    for orig_line, trans_line in zip(original_lines, translated_lines):
-        remaining = len(orig_line)
-        segments = []
-        while remaining > 0 and run_idx < len(run_texts):
-            cur_text = run_texts[run_idx]
-            avail = len(cur_text) - run_pos
-            if avail <= 0:
-                run_idx += 1
-                run_pos = 0
-                continue
-            take = min(avail, remaining)
-            segments.append((run_idx, cur_text[run_pos:run_pos+take]))
-            remaining -= take
-            run_pos += take
-            if run_pos >= len(cur_text):
-                run_idx += 1
-                run_pos = 0
-        # Assign translated line proportionally
-        total_len = sum(len(s[1]) for s in segments) or 1
-        pos = 0
-        for i, (r_idx, s_text) in enumerate(segments):
-            if i == len(segments) - 1:
-                seg = trans_line[pos:]
-            else:
-                seg_len = int(round(len(s_text) / total_len * len(trans_line)))
-                seg = trans_line[pos:pos+seg_len]
-            run_assignments[r_idx].append(seg)
-            pos += len(seg)
+async def process_text_frame(text_frame, src, tgt, client):
+    for p in text_frame.paragraphs:
+        lines = p.text.split("\n")
+        if any(lines):
+            t = await call_translate_api(lines, src, tgt, client)
+            merge_translated_paragraph(p, t)
 
-    for r_idx, parts in run_assignments.items():
-        paragraph.runs[r_idx].text = "\n".join(parts) if parts else ""
-        paragraph.runs[r_idx].text = re.sub(r'_x[0-9A-Fa-f]{4}_', ' ', paragraph.runs[r_idx].text)
+async def process_table(table, src, tgt, client):
+    for row in table.rows:
+        for cell in row.cells:
+            if hasattr(cell, "text_frame"):
+                await process_text_frame(cell.text_frame, src, tgt, client)
 
-
-async def process_text_frame(text_frame, src_lang, tgt_lang, client: httpx.AsyncClient):
-    """Process text frame with translation"""
-    for paragraph in text_frame.paragraphs:
-        lines = paragraph.text.split("\n")
-        if not any(lines):
-            continue
-        is_single_line = len(lines) == 1
-        try:
-            translations = await call_translate_api(lines, src_lang, tgt_lang, client)
-        except Exception as e:
-            print("Translation API failed:", e)
-            continue
-        try:
-            merge_translated_paragraph_preserve_runs(paragraph, translations, force_single_line=is_single_line)
-        except Exception as e:
-            paragraph.text = " ".join(translations) if is_single_line else "\n".join(translations)
-            paragraph.text = re.sub(r'_x[0-9A-Fa-f]{4}_', ' ', paragraph.text)
-
-
-async def process_table(table, src_lang, tgt_lang, client: httpx.AsyncClient):
-    """Process table cells with translation"""
-    for r in range(len(table.rows)):
-        for c in range(len(table.columns)):
-            cell = table.cell(r, c)
-            if getattr(cell, "text_frame", None):
-                await process_text_frame(cell.text_frame, src_lang, tgt_lang, client)
-
-
-def replace_image_blob(shape, new_image_bytes):
-    """Replace image in shape with new bytes"""
+async def translate_image_shape(shape, src, tgt, client):
     try:
-        image_stream = io.BytesIO(new_image_bytes) if isinstance(new_image_bytes, bytes) else new_image_bytes
-        image_part, rId = shape.part.get_or_add_image_part(image_stream)
-        blip = shape._element.blipFill.blip
-        blip.rEmbed = rId
-    except Exception as e:
-        print("replace_image_blob failed:", e)
+        orig = shape.image.blob
+        new = await translate_image_bytes(orig, src, tgt, client)
+        stream = io.BytesIO(new)
+        image_part, rId = shape.part.get_or_add_image_part(stream)
+        shape._element.blipFill.blip.rEmbed = rId
+    except:
+        pass
 
-
-async def translate_image_shape(shape, src_lang, tgt_lang, client: httpx.AsyncClient):
-    """Translate image within PPTX shape"""
-    try:
-        if not getattr(shape, "image", None):
-            return
-        orig_bytes = shape.image.blob
-
-        # Translate the image
-        translated_bytes = await translate_image_bytes(orig_bytes, src_lang, tgt_lang, client)
-
-        # Replace the image
-        replace_image_blob(shape, translated_bytes)
-    except Exception as e:
-        print("translate_image_shape failed:", e)
-
-
-async def process_shape(shape, src_lang, tgt_lang, client: httpx.AsyncClient, translate_images=True):
-    """Process individual shape (text, table, image, or group)"""
-    if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
-        print("Processing text frame...")
-        await process_text_frame(shape.text_frame, src_lang, tgt_lang, client)
-    elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.TABLE and getattr(shape, "table", None):
-        print("Processing table...")
-        await process_table(shape.table, src_lang, tgt_lang, client)
-    elif getattr(shape, "image", None) is not None and translate_images:
-        print("Processing image...")
-        await translate_image_shape(shape, src_lang, tgt_lang, client)
-    elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
-        print("Processing group shape...")
+async def process_shape(shape, src, tgt, client, translate_images=True):
+    if getattr(shape, "has_text_frame", False):
+        await process_text_frame(shape.text_frame, src, tgt, client)
+    elif shape.shape_type == MSO_SHAPE_TYPE.TABLE:
+        await process_table(shape.table, src, tgt, client)
+    elif getattr(shape, "image", None) and translate_images:
+        await translate_image_shape(shape, src, tgt, client)
+    elif shape.shape_type == MSO_SHAPE_TYPE.GROUP:
         for shp in shape.shapes:
-            await process_shape(shp, src_lang, tgt_lang, client, translate_images)
+            await process_shape(shp, src, tgt, client, translate_images)
 
+async def convert_pptx_to_pdf(pptx_bytes: bytes) -> bytes:
+    """Convert PPTX→PDF via libreoffice."""
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        tmp.write(pptx_bytes)
+        path = tmp.name
 
-async def process_slide_master(slide_master, src_lang, tgt_lang, client: httpx.AsyncClient, translate_images=True):
-    """Process slide master shapes"""
-    for shape in list(slide_master.shapes):
-        await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+    outdir = tempfile.mkdtemp()
+    subprocess.run(
+        ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", outdir, path],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120
+    )
 
+    pdf_path = path.replace(".pptx", ".pdf").replace(
+        os.path.dirname(path), outdir
+    )
 
-async def process_slide_layout(slide_layout, src_lang, tgt_lang, client: httpx.AsyncClient, translate_images=True):
-    """Process slide layout shapes"""
-    for shape in list(slide_layout.shapes):
-        await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+    with open(pdf_path, "rb") as f:
+        content = f.read()
 
-
-async def convert_pptx_to_pdf(pptx_bytes: bytes) -> str:
-    """Convert PPTX bytes to PDF bytes and return as base64 string"""
-    with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp_pptx:
-        tmp_pptx.write(pptx_bytes)
-        tmp_pptx_path = tmp_pptx.name
-
-    tmp_dir = tempfile.mkdtemp()
-
-    try:
-        result = subprocess.run(
-            ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir',
-             tmp_dir, tmp_pptx_path],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-
-        if result.returncode != 0:
-            raise Exception(f"LibreOffice conversion failed: {result.stderr}")
-
-        pdf_filename = os.path.basename(tmp_pptx_path).replace('.pptx', '.pdf')
-        pdf_path = os.path.join(tmp_dir, pdf_filename)
-
-        with open(pdf_path, 'rb') as pdf_file:
-            pdf_content = pdf_file.read()
-
-        pdf_b64 = base64.b64encode(pdf_content).decode('utf-8')
-        return pdf_b64
-    finally:
-        os.unlink(tmp_pptx_path)
-        if os.path.exists(os.path.join(tmp_dir, pdf_filename)):
-            os.unlink(os.path.join(tmp_dir, pdf_filename))
-        os.rmdir(tmp_dir)
-
+    os.unlink(path)
+    os.unlink(pdf_path)
+    os.rmdir(outdir)
+    return content
 
 async def translate_pptx_bytes(
-    input_bytes: bytes,
-    src_lang: str,
-    tgt_lang: str,
+    pptx_bytes: bytes,
+    src: str,
+    tgt: str,
     client: httpx.AsyncClient,
-    translate_master: bool = True,
-    translate_images: bool = True
+    translate_master=True,
+    translate_images=True
 ) -> bytes:
-    """
-    Translate PPTX presentation - text, tables, and images
-    """
-    prs = Presentation(io.BytesIO(input_bytes))
 
-    # Translate masters and layouts if requested
+    prs = Presentation(io.BytesIO(pptx_bytes))
+
+    # Masters
     if translate_master:
-        used_masters = []
-        seen_master_ids = set()
-        for slide in prs.slides:
-            if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'slide_master'):
-                master = slide.slide_layout.slide_master
-                master_id = id(master)
-                if master_id not in seen_master_ids:
-                    seen_master_ids.add(master_id)
-                    used_masters.append(master)
+        masters = {id(slide.slide_layout.slide_master): slide.slide_layout.slide_master
+                   for slide in prs.slides}.values()
+        for m in masters:
+            for shape in m.shapes:
+                await process_shape(shape, src, tgt, client, translate_images)
+            for layout in m.slide_layouts:
+                for shape in layout.shapes:
+                    await process_shape(shape, src, tgt, client, translate_images)
 
-        for master in used_masters:
-            await process_slide_master(master, src_lang, tgt_lang, client, translate_images)
-            for layout in master.slide_layouts:
-                await process_slide_layout(layout, src_lang, tgt_lang, client, translate_images)
+    # Slides
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            await process_shape(shape, src, tgt, client, translate_images)
 
-    # Translate all slides
-    for slide_idx, slide in enumerate(prs.slides):
-        print(f"Processing slide {slide_idx + 1}/{len(prs.slides)}")
-        for shape in list(slide.shapes):
-            await process_shape(shape, src_lang, tgt_lang, client, translate_images)
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
 
-    # Save to bytes
-    out = io.BytesIO()
-    prs.save(out)
-    out.seek(0)
-    return out.read()
-
-
-# ============ API Endpoints ============
+# ---------------------- ENDPOINTS ---------------------- #
 
 @app.post("/translate/image")
-async def translate_image(
-    file: UploadFile,
-    src_lang: str = Form(...),
-    tgt_lang: str = Form(...),
-    return_format: str = Form("base64")  # "base64" or "file"
-):
-    """
-    Translate a single image
-    Returns: JSON with base64 image or binary image file
-    """
-    img_bytes = await file.read()
-
-    async with httpx.AsyncClient() as client:
-        translated_bytes = await translate_image_bytes(img_bytes, src_lang, tgt_lang, client)
-
-    if return_format == "file":
-        return Response(
-            content=translated_bytes,
-            media_type="image/png",
-            headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
-        )
-    else:
-        img_b64 = base64.b64encode(translated_bytes).decode("utf-8")
-        return {"image_base64": img_b64}
-
+async def translate_image(file: UploadFile, src_lang: str = Form(...), tgt_lang: str = Form(...)):
+    img = await file.read()
+    async with httpx.AsyncClient() as c:
+        out = await translate_image_bytes(img, src_lang, tgt_lang, c)
+    return Response(content=out, media_type="image/png")
 
 @app.post("/translate/pptx")
 async def translate_pptx(
     file: UploadFile,
     src_lang: str = Form(...),
     tgt_lang: str = Form(...),
-    output_format: str = Form("pdf"),  # "pptx" or "pdf"
+    output_format: str = Form("pdf"),
     translate_master: bool = Form(True),
     translate_images: bool = Form(True)
 ):
-    """
-    Translate PPTX file - text, tables, and images
-    Returns: Translated PPTX or PDF file
-    """
-    pptx_bytes = await file.read()
-
+    pptx = await file.read()
     async with httpx.AsyncClient() as client:
-        translated_bytes = await translate_pptx_bytes(
-            pptx_bytes,
-            src_lang,
-            tgt_lang,
-            client,
-            translate_master,
-            translate_images
+        translated = await translate_pptx_bytes(
+            pptx, src_lang, tgt_lang, client, translate_master, translate_images
         )
 
-    # If PDF output requested, convert PPTX to PDF
     if output_format.lower() == "pdf":
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp_pptx:
-                tmp_pptx.write(translated_bytes)
-                tmp_pptx_path = tmp_pptx.name
+        pdf = await convert_pptx_to_pdf(translated)
+        return Response(
+            content=pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={file.filename.replace('.pptx','_translated.pdf')}"}
+        )
 
-            tmp_dir = tempfile.mkdtemp()
-
-            # Convert PPTX to PDF using LibreOffice
-            result = subprocess.run(
-                ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir',
-                 tmp_dir, tmp_pptx_path],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode != 0:
-                raise Exception(f"LibreOffice conversion failed: {result.stderr}")
-
-            # Read the converted PDF
-            pdf_filename = os.path.basename(tmp_pptx_path).replace('.pptx', '.pdf')
-            pdf_path = os.path.join(tmp_dir, pdf_filename)
-
-            with open(pdf_path, 'rb') as pdf_file:
-                pdf_content = pdf_file.read()
-
-            # Cleanup temp files
-            os.unlink(tmp_pptx_path)
-            os.unlink(pdf_path)
-            os.rmdir(tmp_dir)
-
-            output_filename = file.filename.rsplit('.', 1)[0] + '_translated.pdf'
-            return Response(
-                content=pdf_content,
-                media_type="application/pdf",
-                headers={"Content-Disposition": f"attachment; filename={output_filename}"}
-            )
-
-        except Exception as e:
-            print(f"PDF conversion failed: {e}")
-            # Fallback to PPTX if conversion fails
-            output = io.BytesIO(translated_bytes)
-            return StreamingResponse(
-                output,
-                media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
-            )
-
-    # Return PPTX
-    output = io.BytesIO(translated_bytes)
-    return StreamingResponse(
-        output,
-        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={"Content-Disposition": f"attachment; filename=translated_{file.filename}"}
+    return Response(
+        content=translated,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
     )
 
+@app.post("/translate/auto")
+async def translate_auto(
+    file: UploadFile,
+    src_lang: str = Form(...),
+    tgt_lang: str = Form(...),
+    output_format: str = Form("auto"),
+    translate_master: bool = Form(True),
+    translate_images: bool = Form(True)
+):
+    name = file.filename.lower()
+
+    if name.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp")):
+        return await translate_image(file, src_lang, tgt_lang)
+
+    if name.endswith(".pptx"):
+        fmt = "pdf" if output_format == "auto" else output_format
+        return await translate_pptx(file, src_lang, tgt_lang, fmt, translate_master, translate_images)
+
+    raise HTTPException(400, "Unsupported file type")
 
 @app.post("/translate/pptx/sse")
 async def translate_pptx_sse(
@@ -520,170 +289,93 @@ async def translate_pptx_sse(
     src_lang: str = Form(...),
     tgt_lang: str = Form(...),
     translate_master: bool = Form(True),
-    translate_images: bool = Form(True),
-    output_format: str = Form("pdf")
+    translate_images: bool = Form(True)
 ):
-    """
-    Translate PPTX and stream incremental PDFs via Server-Sent Events
-    Each slide event contains: slide number, total slides, and base64 PDF
-    """
     pptx_bytes = await file.read()
 
-    async def event_generator():
-        async with httpx.AsyncClient() as client:
-            try:
-                print("🚀 Starting translation process")
-                prs = Presentation(io.BytesIO(pptx_bytes))
-                total_slides = len(prs.slides)
+    async def event_stream():
+        try:
+            prs = Presentation(io.BytesIO(pptx_bytes))
+            total = len(prs.slides)
 
-                # Send initial status
-                print(f"📤 Sending status: started with {total_slides} slides")
-                yield {
-                    "event": "status",
-                    "data": json.dumps({
-                        "status": "started",
-                        "total_slides": total_slides
-                    })
-                }
-                # Force flush after each event
-                await asyncio.sleep(0)
+            # Initial event
+            yield {
+                "event": "status",
+                "data": json.dumps({"status": "started", "total_slides": total})
+            }
+            await asyncio.sleep(0)
 
-                # Translate masters if requested
+            async with httpx.AsyncClient() as client:
+
+                # --- Translate master/layout once ---
                 if translate_master:
-                    print("📤 Sending status: processing_masters")
-                    yield {
-                        "event": "status",
-                        "data": json.dumps({"status": "processing_masters"})
-                    }
+                    yield {"event": "status", "data": json.dumps({"status": "processing_masters"})}
                     await asyncio.sleep(0)
 
-                    used_masters = []
-                    seen_master_ids = set()
+                    masters = {id(slide.slide_layout.slide_master): slide.slide_layout.slide_master
+                               for slide in prs.slides}.values()
 
-                    for slide in prs.slides:
-                        if hasattr(slide, 'slide_layout') and hasattr(slide.slide_layout, 'slide_master'):
-                            master = slide.slide_layout.slide_master
-                            master_id = id(master)
-                            if master_id not in seen_master_ids:
-                                seen_master_ids.add(master_id)
-                                used_masters.append(master)
-
-                    for master in used_masters:
-                        await process_slide_master(master, src_lang, tgt_lang, client, translate_images)
+                    for master in masters:
+                        for shape in master.shapes:
+                            await process_shape(shape, src_lang, tgt_lang, client, translate_images)
                         for layout in master.slide_layouts:
-                            await process_slide_layout(layout, src_lang, tgt_lang, client, translate_images)
+                            for shape in layout.shapes:
+                                await process_shape(shape, src_lang, tgt_lang, client, translate_images)
 
-                # Process slides incrementally
-                for slide_idx, slide in enumerate(prs.slides):
-                    current_slide = slide_idx + 1
+                # --- Slide-by-slide translation + streaming ---
+                for idx, slide in enumerate(prs.slides):
+                    slide_no = idx + 1
 
-                    # Send progress event
-                    print(f"📤 Sending progress: slide {current_slide}/{total_slides}")
+                    # Progress event
                     yield {
                         "event": "progress",
-                        "data": json.dumps({
-                            "slide": current_slide,
-                            "total": total_slides,
-                            "status": "translating"
-                        })
+                        "data": json.dumps({"slide": slide_no, "total": total})
                     }
                     await asyncio.sleep(0)
 
-                    # Translate slide shapes
-                    for shape in list(slide.shapes):
+                    # Translate slide content
+                    for shape in slide.shapes:
                         await process_shape(shape, src_lang, tgt_lang, client, translate_images)
 
-                    # Save PPTX state and convert to PDF
-                    pptx_output = io.BytesIO()
-                    prs.save(pptx_output)
-                    pptx_output.seek(0)
+                    # Convert current PPTX state → PDF
+                    buf = io.BytesIO()
+                    prs.save(buf)
+                    pdf_bytes = await convert_pptx_to_pdf(buf.getvalue())
+                    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-                    print(f"🔄 Converting slide {current_slide} to PDF...")
-                    pdf_b64 = await convert_pptx_to_pdf(pptx_output.read())
-                    pdf_size = len(pdf_b64)
-                    print(f"📤 Sending slide {current_slide}, PDF size: {pdf_size:,} chars")
-
-                    # Send complete slide with PDF data
+                    # Slide event
                     yield {
                         "event": "slide",
                         "data": json.dumps({
-                            "slide": current_slide,
-                            "total": total_slides,
+                            "slide": slide_no,
+                            "total": total,
                             "file_base64": pdf_b64,
-                            "format": output_format
-                        })
+                            "format": "pdf"
+                        }),
                     }
-                    # Critical: yield control to flush the event
                     await asyncio.sleep(0)
-                    print(f"✅ Slide {current_slide} sent successfully")
 
-                # Send completion event
-                print("📤 Sending completion event")
+                # Completion event
                 yield {
                     "event": "complete",
-                    "data": json.dumps({
-                        "status": "completed",
-                        "total_slides": total_slides
-                    })
+                    "data": json.dumps({"status": "completed", "total_slides": total})
                 }
                 await asyncio.sleep(0)
-                print("✅ Translation process completed")
 
-            except Exception as e:
-                print(f"❌ Error in translation: {e}")
-                import traceback
-                traceback.print_exc()
-                yield {
-                    "event": "error",
-                    "data": json.dumps({"error": str(e)})
-                }
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
-    # CRITICAL: Ensure no buffering with ping and proper headers
+    # SSE response with no buffering
     return EventSourceResponse(
-        event_generator(),
+        event_stream(),
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no"
         },
-        ping=10  # Send ping every 10 seconds to keep connection alive
+        ping=10
     )
 
 
-@app.post("/translate/auto")
-async def translate_auto(
-    file: UploadFile,
-    src_lang: str = Form(...),
-    tgt_lang: str = Form(...),
-    output_format: str = Form("auto"),  # "auto", "pptx", or "pdf" (for pptx files only)
-    translate_master: bool = Form(True),
-    translate_images: bool = Form(True)
-):
-    """
-    Automatically detect file type and translate accordingly
-    Supports: images (png, jpg, jpeg, gif, bmp), PPTX
-    For PPTX: can output as PPTX or PDF (controlled by output_format)
-    """
-    filename = file.filename.lower()
-
-    if filename.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-        return await translate_image(file, src_lang, tgt_lang, "file")
-    elif filename.endswith('.pptx'):
-        # Default to PDF for PPTX if auto
-        fmt = "pdf" if output_format == "auto" else output_format
-        return await translate_pptx(file, src_lang, tgt_lang, fmt, translate_master, translate_images)
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type. Supported: images (png, jpg, jpeg, gif, bmp), pptx"
-        )
-
-
 @app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "unified-translator"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("image_translator.unified_pipeline:app", host="0.0.0.0", port=5000, reload=False)
+async def health():
+    return {"status": "healthy"}
