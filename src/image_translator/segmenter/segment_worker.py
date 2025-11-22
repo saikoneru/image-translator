@@ -37,7 +37,7 @@ class SegmentWorker(BaseWorker):
     def __init__(self):
         print("Loading SaT Segmenter...")
         try:
-            self.sat = SaT("sat-3l-sm", ort_providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+            self.sat = SaT("sat-12l-sm", ort_providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
             self.backend = "ONNX CUDA"
             print("✅ SaT Segmenter loaded with ONNX CUDA acceleration")
         except Exception as e:
@@ -176,6 +176,7 @@ class SegmentWorker(BaseWorker):
         groups = self.segment_with_sat(ocr_results, lang_code)
         merged_results = self.merge_boxes_from_groups(ocr_results, groups)
 
+        print(merged_results)
         output = {"groups": groups, "merged_results": merged_results, "num_groups": len(groups)}
         if not self.validate_output(output):
             raise ValueError("Invalid output from SegmentWorker")
@@ -206,7 +207,7 @@ async def segment_endpoint(file: UploadFile = File(...), ocr_results_json: str =
 
 @app.get("/")
 async def root():
-    return {"status": "SaT Segment Worker running", "model": "sat-3l-sm", "backend": worker.backend}
+    return {"status": "SaT Segment Worker running", "model": "sat-12l-sm", "backend": worker.backend}
 
 
 if __name__ == "__main__":

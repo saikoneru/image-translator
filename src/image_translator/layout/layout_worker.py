@@ -51,9 +51,9 @@ class LayoutConfig(BaseModel):
     model_type: str = "vit_l"
     checkpoint: str = "/app/pretrained_checkpoint/hi_sam_l.pth"
     device: str = "cuda"
-    total_points: int = 1500
-    batch_points: int = 100
-    layout_thresh: float = 0.5
+    total_points: int = 2000
+    batch_points: int = 200
+    layout_thresh: float = 0.4
 
 
 class HiSamLayoutWorker(BaseWorker):

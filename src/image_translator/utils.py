@@ -6,45 +6,77 @@ import re
 from typing import List, Dict
 import io
 
-def proportional_char_split(text, num_segments, proportions=None):
+def proportional_word_split(text, num_segments, proportions=None):
     """
-    Split text into `num_segments` parts by character count, proportional to geometry.
-    Keeps all characters and ensures each segment has at least one.
+    Split text into `num_segments` parts by word count, trying to match
+    character count proportions. Keeps all words intact and ensures each
+    segment has at least one word (if available).
     """
     text = text.strip()
     if not text or num_segments <= 1:
         return [text]
 
-    n_chars = len(text)
+    # Split into words
+    words = text.split()
+    if not words:
+        return [text]
+
+    # If fewer words than segments, distribute what we have
+    if len(words) < num_segments:
+        result = [w for w in words]
+        result.extend([''] * (num_segments - len(words)))
+        return result
+
+    # Calculate character length of each word (including space)
+    word_lengths = [len(w) + 1 for w in words]  # +1 for space
+    word_lengths[-1] -= 1  # Last word has no trailing space
+    total_chars = sum(word_lengths)
+
+    # Setup proportions
     if proportions is None or len(proportions) != num_segments:
         proportions = np.ones(num_segments)
     proportions = np.maximum(proportions, 1e-3)
     proportions = proportions / proportions.sum()
 
-    # Compute char allocation
-    char_counts = np.maximum(1, (proportions * n_chars).astype(int))
+    # Target character counts for each segment
+    target_chars = proportions * total_chars
 
-    # Fix rounding mismatch
-    diff = n_chars - char_counts.sum()
-    if diff > 0:
-        for i in np.argsort(-proportions)[:diff]:
-            char_counts[i] += 1
-    elif diff < 0:
-        for i in np.argsort(proportions)[:abs(diff)]:
-            if char_counts[i] > 1:
-                char_counts[i] -= 1
+    # Greedily assign words to segments to match target char counts
+    segments = [[] for _ in range(num_segments)]
+    segment_chars = np.zeros(num_segments)
 
-    # Split text
-    parts, idx = [], 0
-    for count in char_counts:
-        parts.append(text[idx:idx + count])
-        idx += count
-    return parts
+    for word_idx, word in enumerate(words):
+        word_len = word_lengths[word_idx]
+
+        # Find segment that's furthest below its target
+        deficits = target_chars - segment_chars
+        segment_idx = np.argmax(deficits)
+
+        segments[segment_idx].append(word)
+        segment_chars[segment_idx] += word_len
+
+    # Convert word lists back to strings
+    result = [' '.join(seg) if seg else '' for seg in segments]
+
+    # Ensure no segment is empty if we have words left
+    empty_indices = [i for i, seg in enumerate(result) if not seg]
+    if empty_indices and any(result):
+        # Steal a word from the longest segment
+        for empty_idx in empty_indices:
+            longest_idx = max(range(num_segments),
+                            key=lambda i: len(segments[i]))
+            if len(segments[longest_idx]) > 1:
+                stolen_word = segments[longest_idx].pop()
+                segments[empty_idx].append(stolen_word)
+                result[empty_idx] = stolen_word
+                result[longest_idx] = ' '.join(segments[longest_idx])
+
+    return result
 
 
 def merge_translations_smart(merged_ocr_results, ocr_line_results):
     """
-    Geometry-aware translation merger.
+    Geometry-aware translation merger with word-level splitting.
     Always fills each OCR line with part of translated text (no empty lines).
     """
     for entry in merged_ocr_results:
@@ -86,12 +118,12 @@ def merge_translations_smart(merged_ocr_results, ocr_line_results):
         orientation = "vertical" if heights.sum() > widths.sum() * 1.5 else "horizontal"
         proportions = heights if orientation == "vertical" else widths
 
-        # Normalize proportions and split text by character length
-        split_texts = proportional_char_split(merged_text, len(group_ids), proportions)
+        # Normalize proportions and split text by words
+        split_texts = proportional_word_split(merged_text, len(group_ids), proportions)
 
         # Assign to OCR lines
         for gid, part in zip(group_ids, split_texts):
-            ocr_line_results[gid]["merged_text"] = part.strip()
+            ocr_line_results[gid]["merged_text"] = part.strip() if part else ""
 
     return ocr_line_results
 
@@ -310,22 +342,6 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         line_bottoms = [np.max(np.array(line["box"])[:, 1]) for line in para]
         avg_line_height = np.mean([b - t for t, b in zip(line_tops, line_bottoms)])
 
-        # Calculate gaps between lines (spacing between bottom of one line and top of next)
-        if len(line_tops) > 1:
-            sorted_indices = np.argsort(line_tops)
-            gaps = []
-            for i in range(len(sorted_indices) - 1):
-                current_idx = sorted_indices[i]
-                next_idx = sorted_indices[i + 1]
-                gap = line_tops[next_idx] - line_bottoms[current_idx]
-                gaps.append(gap)
-            avg_gap = np.mean(gaps) if gaps else 0
-        else:
-            avg_gap = 0
-
-        # Total spacing per line = line height + gap
-        line_spacing = avg_line_height + avg_gap
-
         # --- Font sizing ---
         # Initial font size based on average line height (not total box height)
         font_size = max(int(avg_line_height * 0.85), font_min)
@@ -358,10 +374,6 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
         else:
             paragraph_align = "center"
 
-        # --- Vertical start ---
-        # Use the actual text height instead of OCR line height for spacing
-        y_current = y_min + padding
-
         # --- Draw each line ---
         for i, line in enumerate(para):
             text_to_draw = line.get("merged_text", line["text"]).strip()
@@ -371,6 +383,9 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
             line_box = np.array(line["box"])
             line_left = np.min(line_box[:, 0])
             line_right = np.max(line_box[:, 0])
+            line_top = np.min(line_box[:, 1])      # Original line top
+            line_bottom = np.max(line_box[:, 1])   # Original line bottom
+            line_height = line_bottom - line_top
 
             line_w = draw.textlength(text_to_draw, font=font)
 
@@ -382,36 +397,27 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
                 indent_offset = max(0, fw_left - line_left)
                 indent_offset = min(indent_offset, box_w * 0.2)
 
-            # --- X position (based on global alignment only) ---
+            # --- X position (based on global paragraph alignment) ---
             if paragraph_align == "left":
-                x_text = x_min + indent_offset + padding
+                x_text = x_min + indent_offset + padding  # Use paragraph x_min
             elif paragraph_align == "right":
-                x_text = x_max - line_w - padding
+                x_text = x_max - line_w - padding  # Use paragraph x_max
             else:
-                x_text = (x_min + x_max - line_w) / 2
+                # Center within the paragraph's width
+                x_text = x_min + (box_w - line_w) / 2  # Use paragraph box_w
 
-            # --- Y position (use line_spacing from OCR) ---
-            if i == 0:
-                # First line: align with original top
-                line_top = np.min(line_box[:, 1])
-                y_text = line_top
-            else:
-                # Subsequent lines: use consistent spacing
-                y_text = y_current
+            # --- Y position (within original line box) ---
+            # Vertically center the text within the original line height
+            y_text = line_top + (line_height - actual_text_height) / 2
 
             # --- Extract color ---
             poly_pts = np.array(line["box"], dtype=np.int32)
             color = extract_text_color_from_diff(poly_pts, orig_img_cv, img_cv)
 
-            # If image has alpha, add full opacity to color
             if has_alpha and len(color) == 3:
                 color = tuple(list(color) + [255])
 
             draw.text((x_text, y_text), text_to_draw, font=font, fill=color)
-
-            # Update y position for next line
-            # Add actual text height plus the original gap
-            y_current = y_text + actual_text_height + avg_gap
 
     return image
 

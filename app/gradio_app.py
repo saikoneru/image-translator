@@ -4,14 +4,18 @@ import base64
 from io import BytesIO
 from PIL import Image
 
-def process_image(image, src_lang, tgt_lang):
-    files = {"file": open(image, "rb")}
-    data = {"src_lang": src_lang, "tgt_lang": tgt_lang}
-    resp = requests.post("http://127.0.0.1:5001//translate/image", files=files, data=data)
-    img_b64 = resp.json()["image_base64"]
-    img_bytes = base64.b64decode(img_b64)
-    img = Image.open(BytesIO(img_bytes))
-    return img
+def process_image(image_path, src_lang, tgt_lang):
+    with open(image_path, "rb") as f:
+        resp = requests.post(
+            "http://127.0.0.1:5001/translate/auto",
+            files={"file": (image_path, f, "image/*")},
+            data={"src_lang": src_lang, "tgt_lang": tgt_lang}
+        )
+
+    # Raw PNG bytes (NOT base64, NOT JSON)
+    img_bytes = resp.content
+
+    return Image.open(BytesIO(img_bytes))
 
 langs = ["English", "Chinese", "Japanese", "French", "German"]
 

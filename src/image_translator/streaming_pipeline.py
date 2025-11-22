@@ -17,6 +17,7 @@ WORKER_URLS = {
     "segment": os.getenv("SEGMENT_WORKER_URL", "http://i13hpc69:8002/segment"),
     "inpaint": os.getenv("INPAINT_WORKER_URL", "http://i13hpc69:8003/inpaint"),
     "translate": os.getenv("TRANSLATE_WORKER_URL", "http://i13hpc69:8004/translate"),
+    "multimodal_translate": os.getenv("MULTIMODAL_TRANSLATE_WORKER_URL", "http://i13hpc69:8006/multimodal_translate"),
     "layout": os.getenv("LAYOUT_WORKER_URL", "http://i13hpc69:8005/detect_layout"),
 }
 
@@ -35,6 +36,8 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
         timeout=REQUEST_TIMEOUT
     )).json()["results"]
 
+    print("OCR Results:", ocr)
+
     if not ocr or all(not (r.get("text") or "").strip() for r in ocr):
         return img_bytes
 
@@ -42,14 +45,18 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
     layout = (await client.post(
         WORKER_URLS["layout"],
         files={"file": ("image.png", img_bytes),
-               "ocr_results_json": (None, json.dumps(ocr))}
+               "ocr_results_json": (None, json.dumps(ocr))},
+        timeout=REQUEST_TIMEOUT
     )).json()
+
+    print("Layout Results:", layout)
 
     # Segment and collect all text
     all_texts = []
     mappings = []
 
     for para_idx, ocr_para in enumerate(layout.get("paragraphs", [])):
+        print("OCR_Para:", ocr_para)
         seg = (await client.post(
             WORKER_URLS["segment"],
             files={"file": ("image.png", img_bytes)},
@@ -57,6 +64,7 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
         )).json()
 
         merged = seg["merged_results"]
+        print("Segmented:", merged)
         start = len(all_texts)
         all_texts.extend([x["merged_text"] for x in merged])
         end = len(all_texts)
@@ -68,17 +76,24 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
             "end": end
         })
 
+    print("All Texts for Translation:", all_texts)
+
     # Batch translation
     translated = []
     if all_texts:
-        translated = (await client.post(
-            WORKER_URLS["translate"],
+        resp = await client.post(
+            #WORKER_URLS["translate"],
+            WORKER_URLS["multimodal_translate"],
+            files={"file": ("image.png", img_bytes)},
             data={
                 "texts_json": json.dumps(all_texts),
                 "src_lang": src_lang,
                 "tgt_lang": tgt_lang
-            }
-        )).json()["translations"]
+            },
+            timeout=60.0
+        )
+        resp.raise_for_status()
+        translated = resp.json()["translations"]
 
     # merge translations
     merged_paragraphs = []
@@ -89,6 +104,8 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
         merged_paragraphs.append(
             merge_translations_smart(m["merged"], m["ocr_para"])
         )
+
+    print("Merged Paragraphs:", merged_paragraphs)
 
     # Inpaint
     inpaint = (await client.post(
