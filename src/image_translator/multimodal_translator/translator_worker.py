@@ -11,6 +11,8 @@ import os
 import uvicorn
 import base64
 from omni_fusion_model import OmniFusionModel
+from PIL import Image
+import io
 
 # ===================================================
 # 🧩 Base Worker Interface
@@ -146,9 +148,8 @@ async def translate_endpoint(
     try:
         texts = json.loads(texts_json)
         image_bytes = await file.read()
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        image_b64 = f"data:image/png;base64,{b64}"
-        images = [image_b64] * len(texts)
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        images = [img] * len(texts)
         input_data = {"texts": texts, "src_lang": src_lang, "tgt_lang": tgt_lang, "images": images}
 
         result = worker.process(input_data)

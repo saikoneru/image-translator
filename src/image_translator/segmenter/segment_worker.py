@@ -63,7 +63,7 @@ class SegmentWorker(BaseWorker):
     # --------------------------
     # Core Logic
     # --------------------------
-    def merge_boxes_from_groups(self, ocr_results, groups):
+    def merge_boxes_from_groups(self, ocr_results, groups, join_all):
         merged_results = []
         for group in groups:
             if not group:
@@ -82,11 +82,18 @@ class SegmentWorker(BaseWorker):
                 [x_min, y_max]
             ], dtype=np.float32)
 
-            merged_results.append({
-                "merged_box": poly.tolist(),
-                "merged_text": " ".join(group_texts),
-                "group_indices": group
-            })
+            if join_all:
+                merged_results.append({
+                    "merged_box": poly.tolist(),
+                    "merged_text": "\n".join(group_texts),
+                    "group_indices": group
+                })
+            else:
+                merged_results.append({
+                    "merged_box": poly.tolist(),
+                    "merged_text": " ".join(group_texts),
+                    "group_indices": group
+                })
         return merged_results
 
     def detect_titles_and_keywords(self, ocr_results):
@@ -102,13 +109,29 @@ class SegmentWorker(BaseWorker):
                 isolated_indices.add(i)
         return isolated_indices, normalize_map
 
-    def segment_with_sat(self, ocr_results, lang_code="en"):
+    def segment_with_sat(self, ocr_results, lang_code="en", join_all=False):
+        """
+        Segment OCR results using SaT.
+
+        Args:
+            ocr_results: List of OCR detection results
+            lang_code: Language code (default: "en")
+            join_all: If True, join all OCR results into a single group
+
+        Returns:
+            List of groups (each group is a list of indices)
+        """
         if not ocr_results:
             return []
 
         valid_indices = [i for i, o in enumerate(ocr_results) if o.get("text", "").strip()]
         if not valid_indices:
             return []
+
+        # If join_all flag is set, return all valid indices in a single group
+        if join_all:
+            print("⚠️ join_all=True: Joining all OCR results into a single group")
+            return [valid_indices]
 
         isolated_indices, normalize_map = self.detect_titles_and_keywords(ocr_results)
 
@@ -172,9 +195,10 @@ class SegmentWorker(BaseWorker):
 
         ocr_results = input_data["ocr_results"]
         lang_code = input_data.get("lang_code", "en")
+        join_all = input_data.get("join_all", False)
 
-        groups = self.segment_with_sat(ocr_results, lang_code)
-        merged_results = self.merge_boxes_from_groups(ocr_results, groups)
+        groups = self.segment_with_sat(ocr_results, lang_code, join_all=join_all)
+        merged_results = self.merge_boxes_from_groups(ocr_results, groups, join_all)
 
         print(merged_results)
         output = {"groups": groups, "merged_results": merged_results, "num_groups": len(groups)}
@@ -192,11 +216,21 @@ worker = SegmentWorker()
 
 
 @app.post("/segment")
-async def segment_endpoint(file: UploadFile = File(...), ocr_results_json: str = Form(...), lang_code: str = Form(default="en")):
+async def segment_endpoint(
+    file: UploadFile = File(...),
+    ocr_results_json: str = Form(...),
+    lang_code: str = Form(default="en"),
+    join_all: bool = Form(default=False)
+):
     try:
         image_bytes = await file.read()
         ocr_results = json.loads(ocr_results_json)
-        input_data = {"ocr_results": ocr_results, "lang_code": lang_code, "image_bytes": image_bytes}
+        input_data = {
+            "ocr_results": ocr_results,
+            "lang_code": lang_code,
+            "image_bytes": image_bytes,
+            "join_all": join_all
+        }
         result = worker.process(input_data)
         return JSONResponse(content=result)
     except Exception as e:

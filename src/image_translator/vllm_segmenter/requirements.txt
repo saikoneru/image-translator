@@ -1,0 +1,12 @@
+torch
+accelerate
+transformers==4.56.1
+peft
+torchvision
+qwen-omni-utils
+fastapi
+pillow
+numpy
+uvicorn
+python-multipart
+qwen-vl-utils

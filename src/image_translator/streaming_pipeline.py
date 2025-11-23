@@ -15,6 +15,7 @@ REQUEST_TIMEOUT = 300
 WORKER_URLS = {
     "ocr": os.getenv("OCR_WORKER_URL", "http://i13hpc69:8001/ocr"),
     "segment": os.getenv("SEGMENT_WORKER_URL", "http://i13hpc69:8002/segment"),
+    "vllm_segment": os.getenv("VLLM_SEGMENT_WORKER_URL", "http://i13hpc69:8007/segment"),
     "inpaint": os.getenv("INPAINT_WORKER_URL", "http://i13hpc69:8003/inpaint"),
     "translate": os.getenv("TRANSLATE_WORKER_URL", "http://i13hpc69:8004/translate"),
     "multimodal_translate": os.getenv("MULTIMODAL_TRANSLATE_WORKER_URL", "http://i13hpc69:8006/multimodal_translate"),
@@ -60,7 +61,7 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
         seg = (await client.post(
             WORKER_URLS["segment"],
             files={"file": ("image.png", img_bytes)},
-            data={"ocr_results_json": json.dumps(ocr_para)}
+            data={"ocr_results_json": json.dumps(ocr_para), "join_all": True}
         )).json()
 
         merged = seg["merged_results"]
@@ -97,15 +98,39 @@ async def translate_image_bytes(img_bytes: bytes, src_lang: str, tgt_lang: str, 
 
     # merge translations
     merged_paragraphs = []
-    for m in mappings:
-        block = translated[m["start"]:m["end"]]
-        for entry, t in zip(m["merged"], block):
-            entry["merged_text"] = t
-        merged_paragraphs.append(
-            merge_translations_smart(m["merged"], m["ocr_para"])
-        )
+    for m_idx, m in enumerate(mappings):
+        print(f"\n=== Processing mapping {m_idx} ===")
+        print(f"Start: {m['start']}, End: {m['end']}")
 
-    print("Merged Paragraphs:", merged_paragraphs)
+        # Get translations for this paragraph
+        block = translated[m["start"]:m["end"]]
+        print(f"Translation block size: {len(block)}")
+        print(f"Merged results size: {len(m['merged'])}")
+
+        # Create a deep copy of merged results and update with translations
+        merged_with_translations = []
+        for entry, translation in zip(m["merged"], block):
+            updated_entry = entry.copy()
+            updated_entry["merged_text"] = translation
+            merged_with_translations.append(updated_entry)
+            print(f"Group {entry.get('group_indices', [])}: '{translation}'")
+
+        # Now merge back into OCR line structure
+        # Make a deep copy of ocr_para to avoid mutations
+        ocr_para_copy = [line.copy() for line in m["ocr_para"]]
+
+        print(f"OCR para has {len(ocr_para_copy)} lines")
+        merged_result = merge_translations_smart(merged_with_translations, ocr_para_copy)
+
+        # Debug: print final assignments
+        for idx, line in enumerate(merged_result):
+            print(f"Line {idx}: '{line.get('merged_text', '')}'")
+
+        merged_paragraphs.append(merged_result)
+
+    print("\n=== Final Merged Paragraphs ===")
+    for p_idx, para in enumerate(merged_paragraphs):
+        print(f"Paragraph {p_idx}: {len(para)} lines")
 
     # Inpaint
     inpaint = (await client.post(

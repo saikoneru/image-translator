@@ -9,8 +9,7 @@ import io
 def proportional_word_split(text, num_segments, proportions=None):
     """
     Split text into `num_segments` parts by word count, trying to match
-    character count proportions. Keeps all words intact and ensures each
-    segment has at least one word (if available).
+    character count proportions. Splits SEQUENTIALLY to preserve order.
     """
     text = text.strip()
     if not text or num_segments <= 1:
@@ -27,52 +26,52 @@ def proportional_word_split(text, num_segments, proportions=None):
         result.extend([''] * (num_segments - len(words)))
         return result
 
-    # Calculate character length of each word (including space)
-    word_lengths = [len(w) + 1 for w in words]  # +1 for space
-    word_lengths[-1] -= 1  # Last word has no trailing space
-    total_chars = sum(word_lengths)
-
     # Setup proportions
     if proportions is None or len(proportions) != num_segments:
         proportions = np.ones(num_segments)
     proportions = np.maximum(proportions, 1e-3)
     proportions = proportions / proportions.sum()
 
-    # Target character counts for each segment
-    target_chars = proportions * total_chars
+    # Calculate how many words each segment should get
+    total_words = len(words)
+    target_word_counts = np.round(proportions * total_words).astype(int)
 
-    # Greedily assign words to segments to match target char counts
-    segments = [[] for _ in range(num_segments)]
-    segment_chars = np.zeros(num_segments)
+    # Adjust to ensure we use exactly all words
+    while target_word_counts.sum() < total_words:
+        # Add to segment with highest proportion that's under target
+        deficits = proportions * total_words - target_word_counts
+        target_word_counts[np.argmax(deficits)] += 1
 
-    for word_idx, word in enumerate(words):
-        word_len = word_lengths[word_idx]
+    while target_word_counts.sum() > total_words:
+        # Remove from segment with most words
+        target_word_counts[np.argmax(target_word_counts)] -= 1
 
-        # Find segment that's furthest below its target
-        deficits = target_chars - segment_chars
-        segment_idx = np.argmax(deficits)
+    # Ensure each segment gets at least 1 word if possible
+    for i in range(num_segments):
+        if target_word_counts[i] == 0 and total_words > num_segments:
+            target_word_counts[i] = 1
 
-        segments[segment_idx].append(word)
-        segment_chars[segment_idx] += word_len
+    # Normalize again after ensuring minimums
+    if target_word_counts.sum() != total_words:
+        diff = total_words - target_word_counts.sum()
+        if diff > 0:
+            target_word_counts[np.argmax(proportions)] += diff
+        else:
+            target_word_counts[np.argmax(target_word_counts)] += diff
 
-    # Convert word lists back to strings
-    result = [' '.join(seg) if seg else '' for seg in segments]
+    # Split words SEQUENTIALLY
+    segments = []
+    word_idx = 0
+    for count in target_word_counts:
+        count = int(count)
+        if count > 0:
+            segment_words = words[word_idx:word_idx + count]
+            segments.append(' '.join(segment_words))
+            word_idx += count
+        else:
+            segments.append('')
 
-    # Ensure no segment is empty if we have words left
-    empty_indices = [i for i, seg in enumerate(result) if not seg]
-    if empty_indices and any(result):
-        # Steal a word from the longest segment
-        for empty_idx in empty_indices:
-            longest_idx = max(range(num_segments),
-                            key=lambda i: len(segments[i]))
-            if len(segments[longest_idx]) > 1:
-                stolen_word = segments[longest_idx].pop()
-                segments[empty_idx].append(stolen_word)
-                result[empty_idx] = stolen_word
-                result[longest_idx] = ' '.join(segments[longest_idx])
-
-    return result
-
+    return segments
 
 def merge_translations_smart(merged_ocr_results, ocr_line_results):
     """
