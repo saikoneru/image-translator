@@ -221,202 +221,179 @@ def merge_translations(merged_ocr_results, ocr_line_results):
     return ocr_line_results
 
 def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
-    """
-    Estimate text color by comparing original and inpainted images safely.
-    Args:
-        poly: polygon (Nx2 numpy array)
-        orig_cv: original image (BGR or RGB)
-        inpaint_cv: inpainted image (BGR or RGB)
-    Returns:
-        (r, g, b) tuple of estimated text color
-    """
-
-    # --- Ensure 3-channel uint8 ---
     def ensure_3ch_uint8(img):
         if img is None:
             raise ValueError("Image is None")
-        if len(img.shape) == 2:  # grayscale
+        if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        elif img.shape[2] == 4:  # RGBA
-            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-        if img.dtype != np.uint8:
-            img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
-        return img
+        elif img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return img.astype(np.uint8)
 
     orig_cv = ensure_3ch_uint8(orig_cv)
     inpaint_cv = ensure_3ch_uint8(inpaint_cv)
 
-    # --- Ensure same size ---
     if orig_cv.shape[:2] != inpaint_cv.shape[:2]:
         inpaint_cv = cv2.resize(inpaint_cv, (orig_cv.shape[1], orig_cv.shape[0]))
 
-    # --- Safe mask creation ---
     mask = np.zeros(orig_cv.shape[:2], dtype=np.uint8)
     cv2.fillPoly(mask, [poly.astype(np.int32)], 255)
 
-    # --- Apply safely ---
     orig_region = cv2.bitwise_and(orig_cv, orig_cv, mask=mask)
     inpaint_region = cv2.bitwise_and(inpaint_cv, inpaint_cv, mask=mask)
 
-    # --- Difference detection ---
     diff = cv2.absdiff(orig_region, inpaint_region)
     diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-
-    # Threshold to isolate changed pixels (likely text)
     _, text_mask = cv2.threshold(diff_gray, 25, 255, cv2.THRESH_BINARY)
 
-    # --- Extract text pixels ---
     text_pixels = orig_region[text_mask == 255].reshape(-1, 3)
+
     if len(text_pixels) < 10:
-        mean_bg = cv2.mean(inpaint_region, mask=mask)[:3]
-        mean_bg_rgb = np.array(mean_bg[::-1])
-        text_color_rgb = 255 - mean_bg_rgb
-        return tuple(int(c) for c in text_color_rgb)
+        # fallback: invert background
+        mean_bg = np.mean(inpaint_region[mask == 255].reshape(-1, 3), axis=0)
+        color_rgb = 255 - mean_bg[::-1]
+        return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
 
-    # --- Use median color for stability ---
-    median_bgr = np.median(text_pixels, axis=0)
-    color_rgb = np.array(median_bgr[::-1])  # convert to RGB
+    med_bgr = np.median(text_pixels, axis=0)
+    color_rgb = med_bgr[::-1]
 
-    # --- Snap near-black or near-white ---
-    brightness = np.mean(color_rgb)
-    if brightness < 80:
-        # Snap to full black if close
-        color_rgb[:] = 0
-    elif brightness > 200:
-        # Snap to full white if close
-        color_rgb[:] = 255
+    bright = np.mean(color_rgb)
+    if bright < 80: color_rgb[:] = 0
+    if bright > 200: color_rgb[:] = 255
 
     return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
 
 
+# -------------------------------------------------------------------
+# Utility: compute straight bounding box around a quad
+# -------------------------------------------------------------------
+def quad_bounds(box):
+    pts = np.array(box)
+    return pts[:,0].min(), pts[:,1].min(), pts[:,0].max(), pts[:,1].max()
+
+
+# -------------------------------------------------------------------
+# Utility: compute text vertical placement inside OCR quad
+# -------------------------------------------------------------------
+def line_vertical_center(line_box, text_h):
+    pts = np.array(line_box)
+    top = pts[:,1].min()
+    bottom = pts[:,1].max()
+    return top + (bottom - top - text_h) / 2
+
+
+# -------------------------------------------------------------------
+# NEW VERSION: draw_paragraphs_polys
+# -------------------------------------------------------------------
 def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
     """
-    Draw paragraph-level OCR results with consistent alignment (left/center/right).
-    Preserves alpha channel if present.
+    Draw translated text into original OCR line polygons with proper per-line alignment.
 
-    Each paragraph is a list of lines, each line is a dict with:
-        - 'text': original text
-        - 'merged_text': translated/aligned text
-        - 'box': [[x,y], ...]
-        - 'words' (optional): list of dicts with 'text' and 'box'
-
-    Args:
-        image: PIL.Image (RGB or RGBA)
-        paragraphs: list of paragraphs, each paragraph = list of lines
-        orig_image: original PIL.Image for color extraction
-        padding: inner margin inside paragraph box
-        font_min: minimum font size allowed
-    Returns:
-        PIL.Image with text drawn (preserves original mode)
+    paragraphs: list of paragraphs, each list of lines:
+        { "text":..., "merged_text":..., "box": [[x,y],...] }
     """
+
+    has_alpha = image.mode == "RGBA"
     draw = ImageDraw.Draw(image)
 
-    # Preserve alpha channel handling
-    has_alpha = image.mode == 'RGBA'
+    # Prepare OpenCV for color extraction
+    orig_cv = cv2.cvtColor(np.array(orig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    inpaint_cv = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-    # Convert to RGB for color extraction (OpenCV doesn't need alpha for this)
-    if has_alpha:
-        img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
-        orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
-    else:
-        img_cv = np.array(image.convert("RGB"))[:, :, ::-1].copy()
-        orig_img_cv = np.array(orig_image.convert("RGB"))[:, :, ::-1].copy()
+    # Font
+    try:
+        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        _ = ImageFont.truetype(font_path, 12)
+    except:
+        font_path = None
+
+    def make_font(size):
+        if font_path:
+            return ImageFont.truetype(font_path, size)
+        return ImageFont.load_default()
 
     for para in paragraphs:
         if not para:
             continue
 
-        # --- Compute paragraph bounding box ---
-        all_pts = np.vstack([np.array(line["box"]) for line in para])
-        x_min, y_min = all_pts[:, 0].min(), all_pts[:, 1].min()
-        x_max, y_max = all_pts[:, 0].max(), all_pts[:, 1].max()
-        box_w, box_h = x_max - x_min, y_max - y_min
-        num_lines = len(para)
+        # === Paragraph bounds ===
+        para_left = min(np.array(l["box"])[:,0].min() for l in para)
+        para_right = max(np.array(l["box"])[:,0].max() for l in para)
+        para_width = para_right - para_left
 
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        font_path = os.path.join(BASE_DIR, "fonts", "dejavu-sans.oblique.ttf")
+        # === Estimate base font size ===
+        line_heights = []
+        for l in para:
+            b = np.array(l["box"])
+            line_heights.append(b[:,1].max() - b[:,1].min())
+        avg_h = np.mean(line_heights)
+        font_size = max(int(avg_h * 0.85), font_min)
+        font = make_font(font_size)
 
-        # --- Estimate vertical spacing from OCR lines ---
-        line_tops = [np.min(np.array(line["box"])[:, 1]) for line in para]
-        line_bottoms = [np.max(np.array(line["box"])[:, 1]) for line in para]
-        avg_line_height = np.mean([b - t for t, b in zip(line_tops, line_bottoms)])
+        # === Horizontal fit across paragraph ===
+        def max_overflow(fnt):
+            worst = 0
+            for l in para:
+                merged = l.get("merged_text", l["text"])
+                tw = draw.textlength(merged, font=fnt)
+                w = np.array(l["box"])[:,0]
+                lw = w.max() - w.min()
+                worst = max(worst, tw - lw)
+            return worst
 
-        # --- Font sizing ---
-        # Initial font size based on average line height (not total box height)
-        font_size = max(int(avg_line_height * 0.85), font_min)
-        if os.path.exists(font_path):
-            font = ImageFont.truetype(font_path, font_size)
-        else:
-            font = ImageFont.load_default()
-
-        # --- Fit width if needed ---
-        text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
-        while max(text_widths) > (box_w - 2 * padding) and font_size > font_min:
+        while font_size > font_min and max_overflow(font) > 0:
             font_size -= 1
-            font = ImageFont.truetype(font_path, font_size) if os.path.exists(font_path) else ImageFont.load_default()
-            text_widths = [draw.textlength(line.get("merged_text", line["text"]), font=font) for line in para]
+            font = make_font(font_size)
 
-        # --- Get actual text bbox for accurate height ---
-        # Use the font to get the actual rendered text height
-        sample_bbox = draw.textbbox((0, 0), "Ay", font=font)  # Use chars with ascenders/descenders
-        actual_text_height = sample_bbox[3] - sample_bbox[1]
+        # Precompute actual text height
+        sample = draw.textbbox((0,0), "Ay", font=font)
+        text_h = sample[3] - sample[1]
 
-        # --- Detect paragraph alignment (global, not per line) ---
-        left_edges = [np.min(np.array(line["box"])[:, 0]) for line in para]
-        right_edges = [np.max(np.array(line["box"])[:, 0]) for line in para]
-        left_std, right_std = np.std(left_edges), np.std(right_edges)
-
-        if left_std < right_std * 0.6:
-            paragraph_align = "left"
-        elif right_std < left_std * 0.6:
-            paragraph_align = "right"
-        else:
-            paragraph_align = "center"
-
-        # --- Draw each line ---
-        for i, line in enumerate(para):
-            text_to_draw = line.get("merged_text", line["text"]).strip()
-            if not text_to_draw:
+        # === Draw all lines with proper alignment ===
+        for line in para:
+            text = line.get("merged_text", line["text"]).strip()
+            if not text:
                 continue
 
-            line_box = np.array(line["box"])
-            line_left = np.min(line_box[:, 0])
-            line_right = np.max(line_box[:, 0])
-            line_top = np.min(line_box[:, 1])      # Original line top
-            line_bottom = np.max(line_box[:, 1])   # Original line bottom
-            line_height = line_bottom - line_top
+            box = np.array(line["box"], dtype=np.float32)
+            x_left = box[:,0].min()
+            x_right = box[:,0].max()
+            y_top = box[:,1].min()
+            y_bottom = box[:,1].max()
+            line_width = x_right - x_left
 
-            line_w = draw.textlength(text_to_draw, font=font)
-
-            # --- Preserve indentation from first word (if available) ---
-            indent_offset = 0
-            if "words" in line and len(line["words"]) > 1:
-                first_word = line["words"][0]
-                fw_left = np.min(np.array(first_word["box"])[:, 0])
-                indent_offset = max(0, fw_left - line_left)
-                indent_offset = min(indent_offset, box_w * 0.2)
-
-            # --- X position (based on global paragraph alignment) ---
-            if paragraph_align == "left":
-                x_text = x_min + indent_offset + padding  # Use paragraph x_min
-            elif paragraph_align == "right":
-                x_text = x_max - line_w - padding  # Use paragraph x_max
+            # === Determine alignment (per line) ===
+            # Compare gap-left vs gap-right inside the paragraph box
+            gap_left = x_left - para_left
+            gap_right = para_right - x_right
+            if abs(gap_left - gap_right) < 10:
+                line_align = "center"
+            elif gap_left < gap_right:
+                line_align = "left"
             else:
-                # Center within the paragraph's width
-                x_text = x_min + (box_w - line_w) / 2  # Use paragraph box_w
+                line_align = "right"
 
-            # --- Y position (within original line box) ---
-            # Vertically center the text within the original line height
-            y_text = line_top + (line_height - actual_text_height) / 2
+            # Width of drawn text
+            text_w = draw.textlength(text, font=font)
 
-            # --- Extract color ---
-            poly_pts = np.array(line["box"], dtype=np.int32)
-            color = extract_text_color_from_diff(poly_pts, orig_img_cv, img_cv)
+            # === Compute x based on alignment ===
+            if line_align == "left":
+                x = x_left + padding
+            elif line_align == "right":
+                x = x_right - text_w - padding
+            else:  # center
+                x = para_left + (para_width - text_w) / 2
 
-            if has_alpha and len(color) == 3:
-                color = tuple(list(color) + [255])
+            # === Vertically center in the original line box ===
+            y = y_top + (y_bottom - y_top - text_h) / 2
 
-            draw.text((x_text, y_text), text_to_draw, font=font, fill=color)
+            # === Choose text color from original diff ===
+            color = extract_text_color_from_diff(box.astype(np.int32), orig_cv, inpaint_cv)
+            if has_alpha:
+                color = (*color, 255)
+
+            # === Draw ===
+            draw.text((x, y), text, font=font, fill=color)
 
     return image
 

@@ -109,7 +109,7 @@ class TranslationWorker(BaseWorker):
             with torch.no_grad():
                 outputs = self.model.generate(
                     **inputs,
-                    max_new_tokens=64,
+                    max_new_tokens=128,
                     do_sample=False,
                     num_beams=5,
                     pad_token_id=self.tokenizer.eos_token_id
@@ -131,6 +131,9 @@ class TranslationWorker(BaseWorker):
                 hyp = hyp.rstrip('.')
 
             filtered_hyps.append(hyp)
+
+        print(batch)
+        print(filtered_hyps)
 
         return {
             "translations": filtered_hyps,

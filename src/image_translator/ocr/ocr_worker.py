@@ -11,6 +11,7 @@ from threading import Thread, Event
 import numpy as np
 import os
 import uvicorn
+import cv2
 
 # =====================================================
 # Base Worker Interface (Unified)

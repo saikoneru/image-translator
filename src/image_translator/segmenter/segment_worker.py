@@ -85,7 +85,7 @@ class SegmentWorker(BaseWorker):
             if join_all:
                 merged_results.append({
                     "merged_box": poly.tolist(),
-                    "merged_text": "\n".join(group_texts),
+                    "merged_text": " ".join(group_texts),
                     "group_indices": group
                 })
             else:
