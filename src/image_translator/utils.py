@@ -6,125 +6,7 @@ import re
 from typing import List, Dict
 import io
 
-def proportional_word_split(text, num_segments, proportions=None):
-    """
-    Split text into `num_segments` parts by word count, trying to match
-    character count proportions. Splits SEQUENTIALLY to preserve order.
-    """
-    text = text.strip()
-    if not text or num_segments <= 1:
-        return [text]
 
-    # Split into words
-    words = text.split()
-    if not words:
-        return [text]
-
-    # If fewer words than segments, distribute what we have
-    if len(words) < num_segments:
-        result = [w for w in words]
-        result.extend([''] * (num_segments - len(words)))
-        return result
-
-    # Setup proportions
-    if proportions is None or len(proportions) != num_segments:
-        proportions = np.ones(num_segments)
-    proportions = np.maximum(proportions, 1e-3)
-    proportions = proportions / proportions.sum()
-
-    # Calculate how many words each segment should get
-    total_words = len(words)
-    target_word_counts = np.round(proportions * total_words).astype(int)
-
-    # Adjust to ensure we use exactly all words
-    while target_word_counts.sum() < total_words:
-        # Add to segment with highest proportion that's under target
-        deficits = proportions * total_words - target_word_counts
-        target_word_counts[np.argmax(deficits)] += 1
-
-    while target_word_counts.sum() > total_words:
-        # Remove from segment with most words
-        target_word_counts[np.argmax(target_word_counts)] -= 1
-
-    # Ensure each segment gets at least 1 word if possible
-    for i in range(num_segments):
-        if target_word_counts[i] == 0 and total_words > num_segments:
-            target_word_counts[i] = 1
-
-    # Normalize again after ensuring minimums
-    if target_word_counts.sum() != total_words:
-        diff = total_words - target_word_counts.sum()
-        if diff > 0:
-            target_word_counts[np.argmax(proportions)] += diff
-        else:
-            target_word_counts[np.argmax(target_word_counts)] += diff
-
-    # Split words SEQUENTIALLY
-    segments = []
-    word_idx = 0
-    for count in target_word_counts:
-        count = int(count)
-        if count > 0:
-            segment_words = words[word_idx:word_idx + count]
-            segments.append(' '.join(segment_words))
-            word_idx += count
-        else:
-            segments.append('')
-
-    return segments
-
-def merge_translations_smart(merged_ocr_results, ocr_line_results):
-    """
-    Geometry-aware translation merger with word-level splitting.
-    Always fills each OCR line with part of translated text (no empty lines).
-    """
-    for entry in merged_ocr_results:
-        group_ids = entry.get("group_indices", [])
-        merged_text = entry.get("merged_text", "").strip()
-
-        if not group_ids:
-            continue
-
-        # Ensure 'merged_text' key exists
-        for gid in group_ids:
-            ocr_line_results[gid].setdefault("merged_text", "")
-
-        # If no translation, copy original OCR text
-        if not merged_text:
-            for gid in group_ids:
-                ocr_line_results[gid]["merged_text"] = ocr_line_results[gid].get("text", "")
-            continue
-
-        # Single line → direct assign
-        if len(group_ids) == 1:
-            ocr_line_results[group_ids[0]]["merged_text"] = merged_text
-            continue
-
-        # Multi-line group → get geometry
-        widths, heights = [], []
-        for gid in group_ids:
-            box = np.array(ocr_line_results[gid].get("box", []))
-            if len(box) == 0:
-                widths.append(1)
-                heights.append(1)
-                continue
-            x_min, y_min = box[:, 0].min(), box[:, 1].min()
-            x_max, y_max = box[:, 0].max(), box[:, 1].max()
-            widths.append(max(1, x_max - x_min))
-            heights.append(max(1, y_max - y_min))
-
-        widths, heights = np.array(widths), np.array(heights)
-        orientation = "vertical" if heights.sum() > widths.sum() * 1.5 else "horizontal"
-        proportions = heights if orientation == "vertical" else widths
-
-        # Normalize proportions and split text by words
-        split_texts = proportional_word_split(merged_text, len(group_ids), proportions)
-
-        # Assign to OCR lines
-        for gid, part in zip(group_ids, split_texts):
-            ocr_line_results[gid]["merged_text"] = part.strip() if part else ""
-
-    return ocr_line_results
 
 def merge_translations(merged_ocr_results, ocr_line_results):
     """
@@ -220,7 +102,199 @@ def merge_translations(merged_ocr_results, ocr_line_results):
 
     return ocr_line_results
 
+def proportional_word_split(text: str, num_parts: int, proportions: np.ndarray) -> List[str]:
+    """
+    Split text into parts based on proportions, ensuring each part gets at least some text.
+    """
+    words = text.split()
+    if not words:
+        return [""] * num_parts
+
+    if len(words) == 1:
+        # Single word goes to the largest proportion
+        result = [""] * num_parts
+        result[np.argmax(proportions)] = text
+        return result
+
+    # Normalize proportions
+    proportions = np.array(proportions, dtype=float)
+    proportions = proportions / proportions.sum()
+
+    # Calculate word counts per part (ensure at least 1 word per part if possible)
+    total_words = len(words)
+    word_counts = np.round(proportions * total_words).astype(int)
+
+    # Ensure each part gets at least 1 word if we have enough words
+    if total_words >= num_parts:
+        word_counts = np.maximum(word_counts, 1)
+
+    # Adjust to match total
+    diff = total_words - word_counts.sum()
+    if diff > 0:
+        # Add remaining words to parts with highest proportions
+        indices = np.argsort(proportions)[::-1]
+        for i in range(diff):
+            word_counts[indices[i % len(indices)]] += 1
+    elif diff < 0:
+        # Remove excess words from parts with lowest proportions
+        indices = np.argsort(proportions)
+        for i in range(abs(diff)):
+            idx = indices[i % len(indices)]
+            if word_counts[idx] > 1:
+                word_counts[idx] -= 1
+
+    # Split words according to counts
+    result = []
+    word_idx = 0
+    for count in word_counts:
+        if count > 0:
+            result.append(" ".join(words[word_idx:word_idx + count]))
+            word_idx += count
+        else:
+            result.append("")
+
+    return result
+
+def proportional_word_split(text: str, num_parts: int, proportions: np.ndarray) -> List[str]:
+    """
+    Split text into parts based on proportions, ensuring each part gets at least some text.
+    """
+    words = text.split()
+    if not words:
+        return [""] * num_parts
+
+    if len(words) == 1:
+        # Single word goes to the largest proportion
+        result = [""] * num_parts
+        result[np.argmax(proportions)] = text
+        return result
+
+    # Normalize proportions
+    proportions = np.array(proportions, dtype=float)
+    proportions = proportions / proportions.sum()
+
+    # Calculate word counts per part (ensure at least 1 word per part if possible)
+    total_words = len(words)
+    word_counts = np.round(proportions * total_words).astype(int)
+
+    # Ensure each part gets at least 1 word if we have enough words
+    if total_words >= num_parts:
+        word_counts = np.maximum(word_counts, 1)
+
+    # Adjust to match total
+    diff = total_words - word_counts.sum()
+    if diff > 0:
+        # Add remaining words to parts with highest proportions
+        indices = np.argsort(proportions)[::-1]
+        for i in range(diff):
+            word_counts[indices[i % len(indices)]] += 1
+    elif diff < 0:
+        # Remove excess words from parts with lowest proportions
+        indices = np.argsort(proportions)
+        for i in range(abs(diff)):
+            idx = indices[i % len(indices)]
+            if word_counts[idx] > 1:
+                word_counts[idx] -= 1
+
+    # Split words according to counts
+    result = []
+    word_idx = 0
+    for count in word_counts:
+        if count > 0:
+            result.append(" ".join(words[word_idx:word_idx + count]))
+            word_idx += count
+        else:
+            result.append("")
+
+    return result
+
+
+def merge_translations_smart(merged_ocr_results: List[Dict], ocr_line_results: List[Dict]) -> List[Dict]:
+    """
+    Geometry-aware translation merger with word-level splitting.
+    Properly handles line structure to prevent text concatenation.
+    Marks lines that are part of merged groups so they can be drawn together.
+
+    Args:
+        merged_ocr_results: List of merged groups with translations
+            [{"group_indices": [0, 1], "merged_text": "translated text"}, ...]
+        ocr_line_results: List of OCR line results (modified in place)
+            [{"text": "...", "box": [[x,y], ...], "merged_text": ""}, ...]
+    """
+    # Initialize all lines with empty merged_text and group info
+    for line in ocr_line_results:
+        line["merged_text"] = ""
+        line["merge_group_id"] = None  # Track which merge group this belongs to
+        line["is_primary_line"] = False  # Only primary line shows text
+
+    for group_idx, entry in enumerate(merged_ocr_results):
+        group_ids = entry.get("group_indices", [])
+        merged_text = entry.get("merged_text", "").strip()
+
+        if not group_ids:
+            continue
+
+        # Mark all lines in this group
+        for gid in group_ids:
+            if gid < len(ocr_line_results):
+                ocr_line_results[gid]["merge_group_id"] = group_idx
+
+        # If no translation, use original text
+        if not merged_text:
+            for gid in group_ids:
+                if gid < len(ocr_line_results):
+                    ocr_line_results[gid]["merged_text"] = ocr_line_results[gid].get("text", "")
+                    ocr_line_results[gid]["is_primary_line"] = True
+            continue
+
+        # Single line → direct assign
+        if len(group_ids) == 1:
+            gid = group_ids[0]
+            if gid < len(ocr_line_results):
+                ocr_line_results[gid]["merged_text"] = merged_text
+                ocr_line_results[gid]["is_primary_line"] = True
+            continue
+
+        # Multi-line group → split based on geometry
+        widths, heights = [], []
+        for gid in group_ids:
+            if gid >= len(ocr_line_results):
+                widths.append(1)
+                heights.append(1)
+                continue
+
+            box = np.array(ocr_line_results[gid].get("box", []))
+            if len(box) == 0:
+                widths.append(1)
+                heights.append(1)
+                continue
+
+            x_min, y_min = box[:, 0].min(), box[:, 1].min()
+            x_max, y_max = box[:, 0].max(), box[:, 1].max()
+            widths.append(max(1, x_max - x_min))
+            heights.append(max(1, y_max - y_min))
+
+        widths = np.array(widths)
+        heights = np.array(heights)
+
+        # Determine orientation
+        orientation = "vertical" if heights.sum() > widths.sum() * 1.5 else "horizontal"
+        proportions = heights if orientation == "vertical" else widths
+
+        # Split text proportionally
+        split_texts = proportional_word_split(merged_text, len(group_ids), proportions)
+
+        # Assign to OCR lines and mark primary
+        for idx, (gid, part) in enumerate(zip(group_ids, split_texts)):
+            if gid < len(ocr_line_results):
+                ocr_line_results[gid]["merged_text"] = part.strip()
+                ocr_line_results[gid]["is_primary_line"] = True  # All split parts are primary
+
+    return ocr_line_results
+
+
 def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
+    """Extract text color by comparing original and inpainted regions."""
     def ensure_3ch_uint8(img):
         if img is None:
             raise ValueError("Image is None")
@@ -249,7 +323,7 @@ def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
     text_pixels = orig_region[text_mask == 255].reshape(-1, 3)
 
     if len(text_pixels) < 10:
-        # fallback: invert background
+        # Fallback: invert background
         mean_bg = np.mean(inpaint_region[mask == 255].reshape(-1, 3), axis=0)
         color_rgb = 255 - mean_bg[::-1]
         return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
@@ -258,41 +332,28 @@ def extract_text_color_from_diff(poly, orig_cv, inpaint_cv):
     color_rgb = med_bgr[::-1]
 
     bright = np.mean(color_rgb)
-    if bright < 80: color_rgb[:] = 0
-    if bright > 200: color_rgb[:] = 255
+    if bright < 80:
+        color_rgb[:] = 0
+    if bright > 200:
+        color_rgb[:] = 255
 
     return tuple(int(c) for c in np.clip(color_rgb, 0, 255))
 
 
-# -------------------------------------------------------------------
-# Utility: compute straight bounding box around a quad
-# -------------------------------------------------------------------
-def quad_bounds(box):
-    pts = np.array(box)
-    return pts[:,0].min(), pts[:,1].min(), pts[:,0].max(), pts[:,1].max()
-
-
-# -------------------------------------------------------------------
-# Utility: compute text vertical placement inside OCR quad
-# -------------------------------------------------------------------
-def line_vertical_center(line_box, text_h):
-    pts = np.array(line_box)
-    top = pts[:,1].min()
-    bottom = pts[:,1].max()
-    return top + (bottom - top - text_h) / 2
-
-
-# -------------------------------------------------------------------
-# NEW VERSION: draw_paragraphs_polys
-# -------------------------------------------------------------------
-def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
+def draw_paragraphs_polys(image, paragraphs, orig_image, padding=4, font_min=8):
     """
     Draw translated text into original OCR line polygons with proper per-line alignment.
+    Lines that are part of the same merge group use the same font size.
 
-    paragraphs: list of paragraphs, each list of lines:
-        { "text":..., "merged_text":..., "box": [[x,y],...] }
+    Args:
+        image: Inpainted image to draw on
+        paragraphs: List of paragraphs, each containing lines
+            [[{"text": "...", "merged_text": "...", "box": [[x,y], ...],
+               "merge_group_id": int, "is_primary_line": bool}, ...], ...]
+        orig_image: Original image for color extraction
+        padding: Horizontal padding for text placement
+        font_min: Minimum font size
     """
-
     has_alpha = image.mode == "RGBA"
     draw = ImageDraw.Draw(image)
 
@@ -300,100 +361,227 @@ def draw_paragraphs_polys(image, paragraphs, orig_image, padding=2, font_min=5):
     orig_cv = cv2.cvtColor(np.array(orig_image.convert("RGB")), cv2.COLOR_RGB2BGR)
     inpaint_cv = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
-    # Font
+    # Font setup
     try:
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        _ = ImageFont.truetype(font_path, 12)
+        test_font = ImageFont.truetype(font_path, 12)
     except:
         font_path = None
 
     def make_font(size):
+        size = max(font_min, int(size))
         if font_path:
-            return ImageFont.truetype(font_path, size)
+            try:
+                return ImageFont.truetype(font_path, size)
+            except:
+                pass
         return ImageFont.load_default()
 
-    for para in paragraphs:
+    # Process each paragraph
+    for para_idx, para in enumerate(paragraphs):
         if not para:
             continue
 
-        # === Paragraph bounds ===
-        para_left = min(np.array(l["box"])[:,0].min() for l in para)
-        para_right = max(np.array(l["box"])[:,0].max() for l in para)
+        # Group lines by merge_group_id
+        merge_groups = {}  # {group_id: [line_indices]}
+        standalone_lines = []  # Line indices not in any group
+
+        for line_idx, line in enumerate(para):
+            group_id = line.get("merge_group_id")
+            if group_id is not None:
+                if group_id not in merge_groups:
+                    merge_groups[group_id] = []
+                merge_groups[group_id].append(line_idx)
+            else:
+                standalone_lines.append(line_idx)
+
+        # Calculate paragraph bounds for alignment
+        para_boxes = [np.array(line["box"]) for line in para if line.get("box")]
+        if not para_boxes:
+            continue
+
+        para_left = min(box[:, 0].min() for box in para_boxes)
+        para_right = max(box[:, 0].max() for box in para_boxes)
         para_width = para_right - para_left
 
-        # === Estimate base font size ===
-        line_heights = []
-        for l in para:
-            b = np.array(l["box"])
-            line_heights.append(b[:,1].max() - b[:,1].min())
-        avg_h = np.mean(line_heights)
-        font_size = max(int(avg_h * 0.85), font_min)
-        font = make_font(font_size)
+        # Process merge groups (lines that were merged together)
+        for group_id, line_indices in merge_groups.items():
+            group_lines = [para[idx] for idx in line_indices]
 
-        # === Horizontal fit across paragraph ===
-        def max_overflow(fnt):
-            worst = 0
-            for l in para:
-                merged = l.get("merged_text", l["text"])
-                tw = draw.textlength(merged, font=fnt)
-                w = np.array(l["box"])[:,0]
-                lw = w.max() - w.min()
-                worst = max(worst, tw - lw)
-            return worst
+            # Calculate combined bounds for the group
+            group_boxes = [np.array(line["box"]) for line in group_lines if line.get("box")]
+            if not group_boxes:
+                continue
 
-        while font_size > font_min and max_overflow(font) > 0:
-            font_size -= 1
-            font = make_font(font_size)
+            # Get all lines with actual text to draw
+            lines_to_draw = [line for line in group_lines if line.get("is_primary_line") and line.get("merged_text", "").strip()]
 
-        # Precompute actual text height
-        sample = draw.textbbox((0,0), "Ay", font=font)
-        text_h = sample[3] - sample[1]
+            if not lines_to_draw:
+                continue
 
-        # === Draw all lines with proper alignment ===
-        for line in para:
-            text = line.get("merged_text", line["text"]).strip()
+            # Calculate average line height for the group
+            line_heights = [box[:, 1].max() - box[:, 1].min() for box in group_boxes]
+            avg_h = np.mean(line_heights)
+
+            # Start with a font size based on average height
+            group_font_size = max(int(avg_h * 0.75), font_min)
+            group_font = make_font(group_font_size)
+
+            # Check if all lines fit with this font size
+            max_overflow = 0
+            for line in lines_to_draw:
+                text = line.get("merged_text", "").strip()
+                if not text:
+                    continue
+                box = np.array(line["box"])
+                line_width = box[:, 0].max() - box[:, 0].min()
+                text_w = draw.textlength(text, font=group_font)
+                overflow = text_w - line_width + (2 * padding)
+                max_overflow = max(max_overflow, overflow)
+
+            # Reduce font size if needed
+            while group_font_size > font_min and max_overflow > 0:
+                group_font_size -= 1
+                group_font = make_font(group_font_size)
+                max_overflow = 0
+                for line in lines_to_draw:
+                    text = line.get("merged_text", "").strip()
+                    if not text:
+                        continue
+                    box = np.array(line["box"])
+                    line_width = box[:, 0].max() - box[:, 0].min()
+                    text_w = draw.textlength(text, font=group_font)
+                    overflow = text_w - line_width + (2 * padding)
+                    max_overflow = max(max_overflow, overflow)
+
+            # Get text height with final font
+            sample_bbox = draw.textbbox((0, 0), "Ayg", font=group_font)
+            text_h = sample_bbox[3] - sample_bbox[1]
+
+            # Determine group alignment strategy
+            # Check if all lines in group are similarly aligned
+            group_gaps_left = []
+            group_gaps_right = []
+            for line in lines_to_draw:
+                box = np.array(line["box"])
+                x_left = box[:, 0].min()
+                x_right = box[:, 0].max()
+                group_gaps_left.append(x_left - para_left)
+                group_gaps_right.append(para_right - x_right)
+
+            avg_gap_left = np.mean(group_gaps_left)
+            avg_gap_right = np.mean(group_gaps_right)
+
+            # Determine group alignment
+            if abs(avg_gap_left - avg_gap_right) < 15:
+                group_alignment = "center"
+            elif avg_gap_left < avg_gap_right:
+                group_alignment = "left"
+            else:
+                group_alignment = "right"
+
+            # Draw each line in the group with the same font and alignment
+            for line in lines_to_draw:
+                text = line.get("merged_text", "").strip()
+                if not text:
+                    continue
+
+                box = np.array(line["box"], dtype=np.float32)
+                if len(box) < 3:
+                    continue
+
+                x_left = box[:, 0].min()
+                x_right = box[:, 0].max()
+                y_top = box[:, 1].min()
+                y_bottom = box[:, 1].max()
+                line_width = x_right - x_left
+                line_height = y_bottom - y_top
+
+                text_w = draw.textlength(text, font=group_font)
+
+                # Apply consistent group alignment
+                if group_alignment == "center":
+                    # Center within the entire paragraph width for consistency
+                    x = para_left + (para_width - text_w) / 2
+                elif group_alignment == "left":
+                    # Align to paragraph left edge with padding
+                    x = para_left + padding
+                else:  # right
+                    # Align to paragraph right edge with padding
+                    x = para_right - text_w - padding
+
+                # Vertical centering
+                y = y_top + (line_height - text_h) / 2
+
+                # Extract text color
+                color = extract_text_color_from_diff(box.astype(np.int32), orig_cv, inpaint_cv)
+                if has_alpha:
+                    color = (*color, 255)
+
+                # Draw the text
+                draw.text((x, y), text, font=group_font, fill=color)
+
+        # Process standalone lines (not part of any merge group)
+        for line_idx in standalone_lines:
+            line = para[line_idx]
+
+            # Skip lines without primary text
+            if not line.get("is_primary_line"):
+                continue
+
+            text = line.get("merged_text", "").strip()
+            if not text:
+                text = line.get("text", "").strip()
             if not text:
                 continue
 
             box = np.array(line["box"], dtype=np.float32)
-            x_left = box[:,0].min()
-            x_right = box[:,0].max()
-            y_top = box[:,1].min()
-            y_bottom = box[:,1].max()
-            line_width = x_right - x_left
+            if len(box) < 3:
+                continue
 
-            # === Determine alignment (per line) ===
-            # Compare gap-left vs gap-right inside the paragraph box
+            x_left = box[:, 0].min()
+            x_right = box[:, 0].max()
+            y_top = box[:, 1].min()
+            y_bottom = box[:, 1].max()
+            line_width = x_right - x_left
+            line_height = y_bottom - y_top
+
+            # Calculate font size for this line
+            line_font_size = max(int(line_height * 0.75), font_min)
+            line_font = make_font(line_font_size)
+
+            # Scale down if needed
+            text_w = draw.textlength(text, font=line_font)
+            while line_font_size > font_min and text_w > line_width - (2 * padding):
+                line_font_size -= 1
+                line_font = make_font(line_font_size)
+                text_w = draw.textlength(text, font=line_font)
+
+            # Get text height
+            sample_bbox = draw.textbbox((0, 0), "Ayg", font=line_font)
+            text_h = sample_bbox[3] - sample_bbox[1]
+
+            # Determine horizontal alignment
             gap_left = x_left - para_left
             gap_right = para_right - x_right
-            if abs(gap_left - gap_right) < 10:
-                line_align = "center"
-            elif gap_left < gap_right:
-                line_align = "left"
-            else:
-                line_align = "right"
 
-            # Width of drawn text
-            text_w = draw.textlength(text, font=font)
-
-            # === Compute x based on alignment ===
-            if line_align == "left":
-                x = x_left + padding
-            elif line_align == "right":
-                x = x_right - text_w - padding
-            else:  # center
+            if abs(gap_left - gap_right) < 15:
                 x = para_left + (para_width - text_w) / 2
+            elif gap_left < gap_right:
+                x = x_left + padding
+            else:
+                x = x_right - text_w - padding
 
-            # === Vertically center in the original line box ===
-            y = y_top + (y_bottom - y_top - text_h) / 2
+            # Vertical centering
+            y = y_top + (line_height - text_h) / 2
 
-            # === Choose text color from original diff ===
+            # Extract text color
             color = extract_text_color_from_diff(box.astype(np.int32), orig_cv, inpaint_cv)
             if has_alpha:
                 color = (*color, 255)
 
-            # === Draw ===
-            draw.text((x, y), text, font=font, fill=color)
+            # Draw the text
+            draw.text((x, y), text, font=line_font, fill=color)
 
     return image
 

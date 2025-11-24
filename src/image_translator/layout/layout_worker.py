@@ -19,7 +19,7 @@ import base64
 import uvicorn
 from PIL import Image
 import io
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, box as shapely_box
 import pyclipper
 import random
 from hi_sam.modeling.build import model_registry
@@ -119,6 +119,32 @@ class HiSamLayoutWorker(BaseWorker):
         offset.AddPath(p, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
         expanded = np.array(offset.Execute(distance))
         return expanded
+
+    def get_word_center(self, word):
+        """Get center point of a word's bounding box."""
+        box = np.array(word["box"], dtype=np.float32)
+        cx = np.mean(box[:, 0])
+        cy = np.mean(box[:, 1])
+        return cx, cy
+
+    def get_line_bounding_box(self, line_words):
+        """Get the overall bounding box for all words in a line."""
+        if not line_words:
+            return None
+
+        all_points = []
+        for word in line_words:
+            box = np.array(word["box"], dtype=np.float32)
+            all_points.extend(box.tolist())
+
+        all_points = np.array(all_points)
+        x_min, y_min = np.min(all_points[:, 0]), np.min(all_points[:, 1])
+        x_max, y_max = np.max(all_points[:, 0]), np.max(all_points[:, 1])
+
+        # Add some padding to make assignment more robust
+        padding = 5
+        return shapely_box(x_min - padding, y_min - padding,
+                          x_max + padding, y_max + padding)
 
     # --------------------------
     # Layout with Resize Support
@@ -236,22 +262,56 @@ class HiSamLayoutWorker(BaseWorker):
                 for i, word in enumerate(ocr_results):
                     if i in assigned_ids:
                         continue
-                    box = np.array(word["box"], dtype=np.float32)
-                    cx, cy = np.mean(box[:, 0]), np.mean(box[:, 1])
+                    cx, cy = self.get_word_center(word)
                     if line_poly.contains(Point(cx, cy)) or line_poly.distance(Point(cx, cy)) < 5:
                         line_out["words"].append(word)
                         assigned_ids.add(i)
 
                 if line_out["words"]:
-                    line_out["words"].sort(key=lambda w: np.mean([p[0] for p in w["box"]]))
+                    # Sort by x-coordinate (left to right)
+                    line_out["words"].sort(key=lambda w: self.get_word_center(w)[0])
                     para_out["lines"].append(line_out)
 
             if para_out["lines"]:
                 paragraphs_out.append(para_out)
 
+        # --- SECOND PASS: Check unassigned words against line bounding boxes ---
+        unassigned_indices = [i for i in range(len(ocr_results)) if i not in assigned_ids]
+
+        if unassigned_indices:
+            for para in paragraphs_out:
+                for line in para["lines"]:
+                    if not line["words"]:
+                        continue
+
+                    # Get bounding box for current line
+                    line_bbox = self.get_line_bounding_box(line["words"])
+                    if line_bbox is None:
+                        continue
+
+                    # Check each unassigned word
+                    newly_assigned = []
+                    for i in unassigned_indices[:]:  # Iterate over copy
+                        word = ocr_results[i]
+                        cx, cy = self.get_word_center(word)
+
+                        # Check if word center is inside line bounding box
+                        if line_bbox.contains(Point(cx, cy)):
+                            line["words"].append(word)
+                            assigned_ids.add(i)
+                            newly_assigned.append(i)
+
+                    # Remove newly assigned from unassigned list
+                    for i in newly_assigned:
+                        unassigned_indices.remove(i)
+
+                    # Re-sort line words to maintain left-to-right order
+                    if newly_assigned:
+                        line["words"].sort(key=lambda w: self.get_word_center(w)[0])
+
         # leftover OCR words become new paragraphs
-        unassigned = [ocr_results[i] for i in range(len(ocr_results)) if i not in assigned_ids]
-        for word in unassigned:
+        remaining_unassigned = [ocr_results[i] for i in range(len(ocr_results)) if i not in assigned_ids]
+        for word in remaining_unassigned:
             paragraphs_out.append({
                 "paragraph_index": len(paragraphs_out),
                 "lines": [{"line_index": 0, "words": [word]}]
@@ -274,6 +334,7 @@ class HiSamLayoutWorker(BaseWorker):
                 filtered_words = [w for w in line["words"] if w.get("text") and w["text"].strip()]
                 if not filtered_words:
                     continue
+                # Sort by x-coordinate to ensure left-to-right reading order
                 filtered_words.sort(key=lambda w: np.mean([p[0] for p in w["box"]]))
                 sorted_lines.append({"line_index": len(sorted_lines), "words": filtered_words})
 

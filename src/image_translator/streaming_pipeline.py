@@ -46,18 +46,18 @@ def draw_ocr_boxes(image: Image.Image, ocr_results: list, color=(0, 255, 0)) -> 
     img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
+
     for idx, result in enumerate(ocr_results):
         box = result.get("box", [])
-        
+
         if isinstance(box, list):
             box = np.array(box)
-        
+
         points = box.reshape((-1, 2)).astype(np.int32)
-        
+
         # Draw polygon only
         draw.polygon([tuple(p) for p in points], outline=color, width=3)
-    
+
     return Image.alpha_composite(img, overlay).convert("RGB")
 
 def draw_ocr_with_text(image: Image.Image, ocr_results: list, color=(0, 255, 0)) -> Image.Image:
@@ -65,38 +65,38 @@ def draw_ocr_with_text(image: Image.Image, ocr_results: list, color=(0, 255, 0))
     img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
+
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
         font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
     except:
         font = ImageFont.load_default()
         font_small = ImageFont.load_default()
-    
+
     for idx, result in enumerate(ocr_results):
         box = result.get("box", [])
         text = result.get("text", "")
-        
+
         if isinstance(box, list):
             box = np.array(box)
-        
+
         points = box.reshape((-1, 2)).astype(np.int32)
-        
+
         # Draw polygon
         draw.polygon([tuple(p) for p in points], outline=color, width=2)
-        
+
         # Calculate box center for text placement
         center_x = int(np.mean(points[:, 0]))
         center_y = int(np.mean(points[:, 1]))
-        
+
         # Draw text inside the box
         text_display = text if len(text) <= 30 else text[:27] + "..."
         bbox = draw.textbbox((center_x, center_y), text_display, font=font_small, anchor="mm")
-        
+
         # Draw semi-transparent background for readability
         draw.rectangle(bbox, fill=(255, 255, 255, 200))
         draw.text((center_x, center_y), text_display, fill=(0, 0, 0), font=font_small, anchor="mm")
-    
+
     return Image.alpha_composite(img, overlay).convert("RGB")
 
 def draw_layout_paragraphs(image: Image.Image, layout: dict, ocr_results: list) -> Image.Image:
@@ -104,12 +104,12 @@ def draw_layout_paragraphs(image: Image.Image, layout: dict, ocr_results: list) 
     img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
+
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
     except:
         font = ImageFont.load_default()
-    
+
     # Different colors for different paragraphs
     colors = [
         (255, 0, 0),    # Red
@@ -119,21 +119,21 @@ def draw_layout_paragraphs(image: Image.Image, layout: dict, ocr_results: list) 
         (0, 128, 128),  # Teal
         (255, 192, 203) # Pink
     ]
-    
+
     paragraphs = layout.get("paragraphs", [])
     for para_idx, paragraph in enumerate(paragraphs):
         color = colors[para_idx % len(colors)]
-        
+
         for line in paragraph:
             box = line.get("box", [])
             if isinstance(box, list):
                 box = np.array(box)
-            
+
             points = box.reshape((-1, 2)).astype(np.int32)
-            
+
             # Draw polygon with paragraph-specific color
             draw.polygon([tuple(p) for p in points], outline=color, width=4)
-        
+
         # Draw paragraph label
         if paragraph:
             first_box = np.array(paragraph[0]["box"]).reshape((-1, 2))
@@ -142,7 +142,7 @@ def draw_layout_paragraphs(image: Image.Image, layout: dict, ocr_results: list) 
             bbox = draw.textbbox(label_pos, label, font=font)
             draw.rectangle(bbox, fill=color)
             draw.text(label_pos, label, fill=(255, 255, 255), font=font)
-    
+
     return Image.alpha_composite(img, overlay).convert("RGB")
 
 def draw_segmented_groups(image: Image.Image, merged_results: list) -> Image.Image:
@@ -150,27 +150,27 @@ def draw_segmented_groups(image: Image.Image, merged_results: list) -> Image.Ima
     img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
+
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
     except:
         font = ImageFont.load_default()
-    
+
     colors = [(255, 255, 0), (0, 255, 255), (255, 0, 255), (128, 255, 0)]
-    
+
     for group_idx, group in enumerate(merged_results):
         color = colors[group_idx % len(colors)]
         merged_text = group.get("merged_text", "")
-        
+
         # Get all boxes in this group
         for line in group.get("lines", []):
             box = line.get("box", [])
             if isinstance(box, list):
                 box = np.array(box)
-            
+
             points = box.reshape((-1, 2)).astype(np.int32)
             draw.polygon([tuple(p) for p in points], outline=color, width=3)
-        
+
         # Draw group label
         if group.get("lines"):
             first_box = np.array(group["lines"][0]["box"]).reshape((-1, 2))
@@ -179,7 +179,7 @@ def draw_segmented_groups(image: Image.Image, merged_results: list) -> Image.Ima
             bbox = draw.textbbox(label_pos, label, font=font)
             draw.rectangle(bbox, fill=color)
             draw.text(label_pos, label, fill=(0, 0, 0), font=font)
-    
+
     return Image.alpha_composite(img, overlay).convert("RGB")
 
 def draw_inpaint_mask(image: Image.Image, boxes: list) -> Image.Image:
@@ -187,38 +187,37 @@ def draw_inpaint_mask(image: Image.Image, boxes: list) -> Image.Image:
     img = image.copy().convert("RGBA")
     overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
+
     for box in boxes:
         if isinstance(box, list):
             box = np.array(box)
-        
+
         points = box.reshape((-1, 2)).astype(np.int32)
-        
+
         # Fill with semi-transparent red
         draw.polygon([tuple(p) for p in points], fill=(255, 0, 0, 100), outline=(255, 0, 0), width=2)
-    
+
     return Image.alpha_composite(img, overlay).convert("RGB")
 
 async def translate_image_bytes(
-    img_bytes: bytes, 
-    src_lang: str, 
-    tgt_lang: str, 
+    img_bytes: bytes,
+    src_lang: str,
+    tgt_lang: str,
     client: httpx.AsyncClient,
     enable_viz: bool = False
 ) -> bytes:
     """
-    Translate image with optional visualization
-    
-    Args:
-        img_bytes: Input image bytes
-        src_lang: Source language
-        tgt_lang: Target language
-        client: HTTP client
-        enable_viz: If True, save visualization at each stage
+    Translate image with detailed debugging and optional visualization
     """
+    import json
+    import io
+    import base64
+    from PIL import Image
+    from datetime import datetime
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     viz_paths = {}
-    
+
     original = Image.open(io.BytesIO(img_bytes))
     has_transparency = original.mode in ("RGBA", "LA") or (
         original.mode == "P" and "transparency" in original.info
@@ -235,7 +234,9 @@ async def translate_image_bytes(
         timeout=REQUEST_TIMEOUT
     )).json()["results"]
 
-    print("OCR Results:", ocr)
+    print(f"\n{'='*60}")
+    print(f"OCR Results: {len(ocr)} words detected")
+    print(f"{'='*60}")
 
     if enable_viz and ocr:
         ocr_viz = draw_ocr_boxes(original, ocr)
@@ -252,7 +253,11 @@ async def translate_image_bytes(
         timeout=REQUEST_TIMEOUT
     )).json()
 
-    print("Layout Results:", layout)
+    print(f"\n{'='*60}")
+    print(f"Layout Results: {len(layout.get('paragraphs', []))} paragraphs")
+    print(f"{'='*60}")
+    for p_idx, para in enumerate(layout.get('paragraphs', [])):
+        print(f"  Paragraph {p_idx}: {len(para)} lines")
 
     if enable_viz:
         layout_viz = draw_layout_paragraphs(original, layout, ocr)
@@ -262,8 +267,19 @@ async def translate_image_bytes(
     all_texts = []
     mappings = []
 
+    print(f"\n{'='*60}")
+    print("SEGMENTATION PHASE")
+    print(f"{'='*60}")
+
     for para_idx, ocr_para in enumerate(layout.get("paragraphs", [])):
-        print("OCR_Para:", ocr_para)
+        print(f"\n--- Paragraph {para_idx} ---")
+        print(f"Lines in paragraph: {len(ocr_para)}")
+
+        # Print structure
+        for line_idx, line in enumerate(ocr_para):
+            text = line.get("text", "")
+            print(f"  Line {line_idx}: '{text[:50]}...' (box: {line.get('box', [])[0] if line.get('box') else 'NO BOX'})")
+
         seg = (await client.post(
             WORKER_URLS["segment"],
             files={"file": ("image.png", img_bytes)},
@@ -271,14 +287,16 @@ async def translate_image_bytes(
         )).json()
 
         merged = seg["merged_results"]
-        print("Segmented:", merged)
-        
+        print(f"  Merged into {len(merged)} groups:")
+        for m_idx, m in enumerate(merged):
+            print(f"    Group {m_idx}: indices {m.get('group_indices', [])} -> '{m.get('merged_text', '')[:50]}...'")
+
         if enable_viz:
             seg_viz = draw_segmented_groups(original, merged)
             viz_paths[f"segment_para_{para_idx}"] = save_viz_stage(
                 seg_viz, f"04_segmented_para_{para_idx}", timestamp
             )
-        
+
         start = len(all_texts)
         all_texts.extend([x["merged_text"] for x in merged])
         end = len(all_texts)
@@ -290,7 +308,12 @@ async def translate_image_bytes(
             "end": end
         })
 
-    print("All Texts for Translation:", all_texts)
+    print(f"\n{'='*60}")
+    print(f"TRANSLATION PHASE")
+    print(f"{'='*60}")
+    print(f"Total texts to translate: {len(all_texts)}")
+    for idx, txt in enumerate(all_texts):
+        print(f"  [{idx}] '{txt[:60]}...'")
 
     # Batch translation
     translated = []
@@ -308,16 +331,29 @@ async def translate_image_bytes(
         resp.raise_for_status()
         translated = resp.json()["translations"]
 
-    # merge translations
+        print(f"\nTranslations received: {len(translated)}")
+        for idx, txt in enumerate(translated):
+            print(f"  [{idx}] '{txt[:60]}...'")
+
+    # Merge translations back
+    print(f"\n{'='*60}")
+    print("MERGE TRANSLATIONS BACK TO LINES")
+    print(f"{'='*60}")
+
     merged_paragraphs = []
     for m_idx, m in enumerate(mappings):
-        print(f"\n=== Processing mapping {m_idx} ===")
-        print(f"Start: {m['start']}, End: {m['end']}")
+        print(f"\n--- Paragraph {m_idx} ---")
+        print(f"  Original lines: {len(m['ocr_para'])}")
+        print(f"  Translation range: [{m['start']}:{m['end']}]")
 
         # Get translations for this paragraph
         block = translated[m["start"]:m["end"]]
-        print(f"Translation block size: {len(block)}")
-        print(f"Merged results size: {len(m['merged'])}")
+        print(f"  Translation block size: {len(block)}")
+        print(f"  Merged groups: {len(m['merged'])}")
+
+        # Verify structure
+        if len(block) != len(m['merged']):
+            print(f"  ⚠️  WARNING: Mismatch! {len(block)} translations vs {len(m['merged'])} groups")
 
         # Create a deep copy of merged results and update with translations
         merged_with_translations = []
@@ -325,25 +361,49 @@ async def translate_image_bytes(
             updated_entry = entry.copy()
             updated_entry["merged_text"] = translation
             merged_with_translations.append(updated_entry)
-            print(f"Group {entry.get('group_indices', [])}: '{translation}'")
+            print(f"  Group {entry.get('group_indices', [])}: '{translation[:40]}...'")
 
         # Now merge back into OCR line structure
-        ocr_para_copy = [line.copy() for line in m["ocr_para"]]
+        print(f"\n  Calling merge_translations_smart...")
+        print(f"  Input: {len(merged_with_translations)} merged groups")
+        print(f"  Output: {len(m['ocr_para'])} lines")
 
-        print(f"OCR para has {len(ocr_para_copy)} lines")
+        # Make a deep copy to avoid modifying original
+        ocr_para_copy = []
+        for line in m["ocr_para"]:
+            line_copy = line.copy()
+            # Ensure box is preserved
+            if "box" in line:
+                line_copy["box"] = line["box"]
+            ocr_para_copy.append(line_copy)
+
         merged_result = merge_translations_smart(merged_with_translations, ocr_para_copy)
 
         # Debug: print final assignments
+        print(f"\n  Final line assignments:")
         for idx, line in enumerate(merged_result):
-            print(f"Line {idx}: '{line.get('merged_text', '')}'")
+            merged_text = line.get('merged_text', '')
+            original_text = line.get('text', '')
+            has_box = 'box' in line and line['box']
+            print(f"    Line {idx}: '{merged_text[:40]}...' (orig: '{original_text[:20]}...') [has_box: {has_box}]")
 
         merged_paragraphs.append(merged_result)
 
-    print("\n=== Final Merged Paragraphs ===")
+    print(f"\n{'='*60}")
+    print("FINAL MERGED PARAGRAPHS STRUCTURE")
+    print(f"{'='*60}")
     for p_idx, para in enumerate(merged_paragraphs):
         print(f"Paragraph {p_idx}: {len(para)} lines")
+        for l_idx, line in enumerate(para):
+            text = line.get('merged_text', line.get('text', ''))
+            box = line.get('box', [])
+            print(f"  Line {l_idx}: '{text[:50]}...' [box: {len(box)} points]")
 
     # Inpaint
+    print(f"\n{'='*60}")
+    print("INPAINTING")
+    print(f"{'='*60}")
+
     inpaint = (await client.post(
         WORKER_URLS["inpaint"],
         files={"file": ("image.png", img_bytes)},
@@ -355,24 +415,26 @@ async def translate_image_bytes(
         inpainted = inpainted.convert("RGBA")
 
     if enable_viz:
-        # Show inpaint mask
         mask_viz = draw_inpaint_mask(original, [r["box"] for r in ocr])
         viz_paths["inpaint_mask"] = save_viz_stage(mask_viz, "05_inpaint_mask", timestamp)
-        
-        # Show inpainted result
         viz_paths["inpainted"] = save_viz_stage(inpainted, "06_inpainted", timestamp)
-        
-        # Show OCR text on inpainted image
         ocr_text_viz = draw_ocr_with_text(inpainted, ocr)
         viz_paths["ocr_text_inpainted"] = save_viz_stage(ocr_text_viz, "06b_ocr_text_on_inpainted", timestamp)
 
     # Draw translations
+    print(f"\n{'='*60}")
+    print("DRAWING PHASE")
+    print(f"{'='*60}")
+    print(f"Drawing {len(merged_paragraphs)} paragraphs")
+
     base = original.convert("RGBA" if has_transparency else "RGB")
     result = draw_paragraphs_polys(inpainted.copy(), merged_paragraphs, base)
 
     if enable_viz:
         viz_paths["final"] = save_viz_stage(result, "07_final_result", timestamp)
-        print(f"\n=== Visualization Summary ===")
+        print(f"\n{'='*60}")
+        print("VISUALIZATION SUMMARY")
+        print(f"{'='*60}")
         print(f"All visualizations saved to: {VIZ_DIR}")
         for stage, path in viz_paths.items():
             print(f"  {stage}: {path}")
@@ -380,7 +442,6 @@ async def translate_image_bytes(
     buf = io.BytesIO()
     result.save(buf, format="PNG")
     return buf.getvalue()
-
 
 
 # ---------------------- TRANSLATION HELPERS ---------------------- #
