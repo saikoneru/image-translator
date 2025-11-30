@@ -1,314 +1,256 @@
 # Image Translator
 
-A modular image translation pipeline that translates text inside images while preserving layout and style. Built with Docker for easy deployment and scalability.
+A modular image translation pipeline that translates text inside images while preserving layout and style.
 
-## 🌟 Features
+## Features
 
 - **Modular Architecture**: Independent workers for OCR, segmentation, inpainting, and translation
-- **Docker-based**: Each worker runs in its own container, avoiding dependency conflicts
-- **Extensible**: Easy to add custom workers or replace existing ones and create new pipelines or frontends using this service
-- **Language Support**: Translate between multiple languages: Simply replace with your desired huggingface translation model in translator worker
-- **Style Preservation**: Maintains original text styling (font size, color, position)
+- **Docker-based**: Each worker runs in its own container
+- **Extensible**: Easy to add custom workers or replace existing ones
+- **Multi-language Support**: Translate between multiple languages
+- **Rule-based Style Preservation**: Aims to maintains original text styling (font, color, position)
 
-## 📋 Table of Contents
-
-- [Pipeline Design](#Pipeline-Design)
-- [Quick Start](#quick-start)
-- [Running with Docker](#running-with-docker)
-- [Workers](#workers)
-- [Creating Custom Workers](#creating-custom-workers)
-
-## 🏗️ Pipeline Design
+## Pipeline Design
 
 ```
 Input Image
-    │
-    ▼
-[OCR Worker] ──────────────────> OCR Results (text + bounding boxes)
-    │
-    ▼
-[Layout Worker] ───────────────> Paragraph Boundaries
-    │
-    ▼
-[Line Segmentation] ───────────> Lines within Paragraphs
-    (combines OCR + Layout)
-    │
-    ▼
-[Segmenter Worker] ────────────> Translation Units (merged text - Model or Concat Paragraph)
-    │
-    ▼
-[Inpainting Worker] ───────────> Image with Text Removed
-    │
-    ▼
-[Translation] ──────────────────> Translated Text
-    │
-    ▼
-[Drawer Worker] ───────────────> Final Translated Image
+    ↓
+[OCR] → Text + Bounding Boxes
+    ↓
+[Layout] → Paragraph Boundaries
+    ↓
+[Segmentation] → Translation Units
+    ↓
+[Inpainting] → Text Removed
+    ↓
+[Translation] → Translated Text
+    ↓
+[Rendering] → Final Translated Image
 ```
 
-
-1. **OCR Worker**: Extracts text and bounding boxes from the image. They are not always line-level with PaddleOCR.
-2. **Layout Worker**: Analyzes image layout and identifies paragraph boundaries
-3. **Line Segmentation**: Combines OCR results with layout to group entries into lines within each paragraph
-4. **Segmenter Worker**: Merges text within paragraphs into optimal translation units
-5. **Inpainting Worker**: Removes original text from the image
-6. **Translation**: Translates merged text to target language
-7. **Drawer Worker**: Renders translated text back onto the image
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-
 - Docker & Docker Compose
-- Python 3.9+ (for local development)
+- Python 3.9+
 
 ### Installation
 
-1. Clone the repository:
+1. **Clone the repository:**
 ```bash
 git clone https://github.com/saikoneru/image-translator.git
 cd image-translator
 ```
 
-2. Build and start all services:
+2. **Download Layout Models:**
+   
+   The layout worker requires HiSAM models. Download both:
+   - **HiSAM checkpoint** from [HiSAM releases](https://github.com/ymy-k/Hi-SAM/releases)
+   - **SAM ViT-H image encoder** (see NOTE in HiSAM README)
+   
+   Place downloaded models in `models/` directory at project root:
+   ```
+   models/
+   ├── hisam_checkpoint.pth
+   └── sam_vit_h_encoder.pth
+   ```
+
+3. **Start all services:**
 ```bash
 docker compose up --build
 ```
 
-3. Access the API:
+## API Endpoints
+
+### Image Translation
+
 ```bash
-curl -X POST http://localhost:5000/process \
-  -F "image=@test_image.jpg" \
-  -F "source_lang=en" \
-  -F "target_lang=de"
+POST /translate/image
+```
+Translate text in an image.
+
+**Parameters:**
+- `file` (image file): Image to translate
+- `src_lang` (string): Source language code
+- `tgt_lang` (string): Target language code
+
+**Example:**
+```bash
+curl -X POST http://localhost:5000/translate/image \
+  -F "file=@image.jpg" \
+  -F "src_lang=en" \
+  -F "tgt_lang=de"
 ```
 
-## 🐳 Running with Docker
+**Response:** PNG image with translated text
 
-### Starting All Services
+---
 
-Every worker will download the models from the internet except the Layout worker models. For this, you need to download the models from [HiSAM](https://github.com/ymy-k/Hi-SAM/tree/main?tab=readme-ov-file#pushpin-checkpoints) and put it in `models/` at the root
-directory of the project. Make you sure download the SAM's ViT image encoder mentioned as NOTE in the README.md. After this you can simply build!
+### PowerPoint Translation
 
 ```bash
-# Build and start all containers
-docker compose up --build
+POST /translate/pptx
+```
+Translate PowerPoint presentations.
 
-# Run in detached mode
-docker compose up -d
+**Parameters:**
+- `file` (PPTX file): Presentation to translate
+- `src_lang` (string): Source language
+- `tgt_lang` (string): Target language
+- `output_format` (string, optional): "pdf" or "pptx" (default: "pdf")
+- `translate_master` (bool, optional): Translate master slides (default: true)
+- `translate_images` (bool, optional): Translate images in slides (default: true)
 
-# View logs
+**Example:**
+```bash
+curl -X POST http://localhost:5000/translate/pptx \
+  -F "file=@presentation.pptx" \
+  -F "src_lang=en" \
+  -F "tgt_lang=fr" \
+  -F "output_format=pdf"
+```
+
+**Response:** PDF or PPTX file
+
+---
+
+### Auto-detect Translation
+
+```bash
+POST /translate/auto
+```
+Auto-detect file type and translate.
+
+**Supported formats:** PNG, JPG, JPEG, GIF, BMP, PPTX
+
+**Parameters:**
+- `file` (file): Document to translate
+- `src_lang` (string): Source language
+- `tgt_lang` (string): Target language
+- `output_format` (string, optional): "auto", "pdf", or "pptx"
+- `translate_master` (bool, optional): For PPTX only
+- `translate_images` (bool, optional): For PPTX only
+
+**Example:**
+```bash
+curl -X POST http://localhost:5000/translate/auto \
+  -F "file=@document.pptx" \
+  -F "src_lang=en" \
+  -F "tgt_lang=es"
+```
+
+---
+
+### Streaming PowerPoint Translation
+
+```bash
+POST /translate/pptx/sse
+```
+Translate PPTX with real-time progress updates via Server-Sent Events.
+
+**Parameters:** Same as `/translate/pptx`
+
+**Response:** SSE stream with events:
+- `status`: Translation started/completed
+- `progress`: Current slide number
+- `slide`: Completed slide as base64 PDF
+- `error`: Error message if failed
+
+**Example:**
+```javascript
+const eventSource = new EventSource('/translate/pptx/sse');
+eventSource.addEventListener('progress', (e) => {
+  const data = JSON.parse(e.data);
+  console.log(`Slide ${data.slide}/${data.total}`);
+});
+```
+
+---
+
+### Health Check
+
+```bash
+GET /health
+```
+Check API status.
+
+**Response:**
+```json
+{"status": "healthy"}
+```
+
+## Docker Management
+
+### Start Services
+```bash
+docker compose up -d              # All services
+docker compose up ocr-worker      # Single worker
+```
+
+### View Logs
+```bash
 docker compose logs -f
 ```
 
-### Starting Individual Workers
-
+### Stop Services
 ```bash
-# Start only OCR worker
-docker compose up ocr-worker
-
-# Start multiple workers
-docker compose up ocr-worker segmenter-worker
+docker compose down       # Stop containers
+docker compose down -v    # Stop and remove volumes
 ```
 
-### Stopping Services
+## Creating Custom Workers
 
-```bash
-# Stop all containers
-docker compose down
-
-# Stop and remove volumes
-docker compose down -v
+### 1. Create Worker Structure
+```
+workers/your_worker/
+├── Dockerfile
+├── requirements.txt
+├── worker.py
+└── README.md
 ```
 
-### Worker Communication
-
-Workers communicate via REST APIs with standardized JSON formats. Each worker:
-- Accepts POST requests with specific input format
-- Returns JSON responses with standardized output format
-
-## 🔧 Creating Custom Workers 
-
-### Step 1: Create Your Worker
-
-Create a new directory in `workers/`:
-
-```bash
-workers/
-├── your_worker/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── README.md
-│   ├── worker.py
-│  
-```
-
-Example `worker.py`:
-
+### 2. Implement Worker
 ```python
-from base_worker import BaseWorker
-from typing import Dict, Any
+from fastapi import FastAPI, UploadFile
+import uvicorn, os
 
-class YourWorker(BaseWorker):
-    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        # Your processing logic here
-        result = self.your_custom_logic(input_data)
-        
-        # Return standardized format
-        return {
-            "success": True,
-            "data": result,
-            "metadata": {
-                "worker": "your_worker",
-                "version": "1.0.0"
-            }
-        }
-    
-    def validate_input(self, input_data: Dict[str, Any]) -> bool:
-        required_fields = ["field1", "field2"]
-        return all(field in input_data for field in required_fields)
-    
-    def validate_output(self, output_data: Dict[str, Any]) -> bool:
-        return "success" in output_data and "data" in output_data
+app = FastAPI(title="Custom Worker")
 
-app = FastAPI(title="Your Custom Worker")
-worker = YourWorker()
-
-@app.post("/custom_process")
-async def custom_endpoint(field1: UploadFile, field2: int):
-    try:
-        ### YOUR LOGIC, modify input###
-        output_data = worker.process(input_Data)
-        return JSONResponse(content=output_data)
-
-    except Exception as e:
-        print("Error during custom processing:", str(e))
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+@app.post("/process")
+async def process(file: UploadFile):
+    # Your logic here
+    result = your_processing_function(await file.read())
+    return {"success": True, "data": result}
 
 if __name__ == "__main__":
-    host = os.getenv("WORKER_HOST", "0.0.0.0")
-    port = int(os.getenv("WORKER_PORT", "8010"))
-    log_level = os.getenv("LOG_LEVEL", "debug")
-
-    uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)
+    uvicorn.run(
+        app, 
+        host=os.getenv("WORKER_HOST", "0.0.0.0"),
+        port=int(os.getenv("WORKER_PORT", "8010"))
+    )
 ```
 
-### Step 2: Create Docker Configuration
-
-Example `Dockerfile`:
-
-```dockerfile
-FROM python:3.9-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python", "app.py"]
-```
-
-### Step 3: Update docker compose.yml
-
-Add your worker to `docker compose.yml`:
-
+### 3. Add to docker-compose.yml
 ```yaml
 your-worker:
   build: ./workers/your_worker
   ports:
-    - "5005:5000"
+    - "8010:8010"
   environment:
-    - WORKER_NAME=your_worker
-  volumes:
-    - ./workers/your_worker:/app
+    - WORKER_PORT=8010
 ```
 
-### Step 4: Update Pipeline
+### 4. Update Pipeline
+Add worker URL to your pipeline configuration and integrate into processing flow.
 
-Modify `pipeline.py` to include your worker:
+## Acknowledgments
 
-```python
-# Add worker endpoint
-YOUR_WORKER_URL = "http://your-worker:5000/process"
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
+- [Simple Lama](https://github.com/enesmsahin/simple-lama-inpainting)
+- [HiSAM](https://github.com/ymy-k/Hi-SAM)
+- [Hugging Face](https://huggingface.co)
+- [python-pptx](https://python-pptx.readthedocs.io)
 
-# Add to pipeline
-your_result = requests.post(YOUR_WORKER_URL, json=input_data)
-```
+## Contact
 
-### Step 5: Test Your Worker
-
-```bash
-# Build and start your worker
-docker compose up --build your-worker
-
-# Test independently
-curl -X POST http://localhost:5005/process \
-  -H "Content-Type: application/json" \
-  -d '{"field1": "value1", "field2": "value2"}'
-```
-
-
-## 📚 API Documentation
-
-### Main Pipeline Endpoint
-
-**POST** `/process`
-
-Translates text in an image from source to target language.
-
-**Request:**
-- `image` (file): Image file to translate
-- `source_lang` (string): Source language code (e.g., "en", "es"). See Seedx LLM language codes
-- `target_lang` (string): Target language code
-
-**Response:**
-```json
-{
-  "success": true,
-  "image_base64": "base64_encoded_image",
-  }
-}
-```
-
-You will get the base64 encoded translated image.
-
-### Individual Worker Endpoints
-
-Each worker exposes their specific endpoint. See individual worker READMEs for the link and their function.
-
-### Local Development (Without Docker)
-
-This is not recommended. The tools used have their own individual environement setups and will lead to conflics. You can look at the Dockerfile for each worker and setup an environment with those specifications.
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-pip install -e .
-
-# Run gateway
-python -m image_translator --port 5000
-
-# Run individual worker
-cd workers/ocr
-python app.py
-```
-
-## 🙏 Acknowledgments
-
-- PaddleOCR
-- Simple Lama
-- HiSAM
-- huggingface
-- python-pptx
-- All coding agent providers
-
-## 📧 Contact
-
-For questions or support, please open an issue on GitHub. We are currently developing
-
-
-
-
-
+For questions or support, please open an issue on [GitHub](https://github.com/saikoneru/image-translator).
