@@ -17,7 +17,6 @@ services:
       - PYTHONUNBUFFERED=1
       - OCR_WORKER_URL=http://ocr-worker:8001/ocr
       - SEGMENT_WORKER_URL=http://segmenter-worker:8002/segment
-      - VLLM_SEGMENT_WORKER_URL=http://vllm-segmenter-worker:8007/segment
       - INPAINT_WORKER_URL=http://inpainter-worker:8003/inpaint
       - TRANSLATE_WORKER_URL=http://translator-worker:8004/translate
       - MULTIMODAL_TRANSLATE_WORKER_URL=http://multimodal-translator-worker:8006/multimodal_translate
@@ -75,25 +74,6 @@ services:
       - translator-network
     restart: unless-stopped
 
-  vllm-segmenter-worker:
-    build:
-      context: .
-      dockerfile: src/image_translator/vllm_segmenter/Dockerfile
-      args:
-        WORKER_NAME: vllm_segmenter
-    container_name: image-translator-vllm-segmenter
-    ports:
-      - "8012:8007"
-    volumes:
-      - ./models:/app/models
-    environment:
-      - PYTHONUNBUFFERED=1
-      - WORKER_PORT=8007
-      - NVIDIA_VISIBLE_DEVICES=${GPU2}
-    runtime: nvidia
-    networks:
-      - translator-network
-    restart: unless-stopped
   # Inpainting Worker (GPU 0)
   inpainter-worker:
     build:
