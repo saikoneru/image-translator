@@ -34,7 +34,7 @@ Input Image
     (combines OCR + Layout)
     │
     ▼
-[Segmenter Worker] ────────────> Translation Units (merged text)
+[Segmenter Worker] ────────────> Translation Units (merged text - Model or Concat Paragraph)
     │
     ▼
 [Inpainting Worker] ───────────> Image with Text Removed
@@ -120,15 +120,6 @@ docker compose down
 # Stop and remove volumes
 docker compose down -v
 ```
-## 👷 Workers
-
-Each worker is an independent service with its own Docker container. For detailed information about each worker:
-
-- [OCR Worker](workers/ocr/README.md) - Text detection and recognition
-- [Layout Worker](workers/layout/README.md) - Paragraph boundary detection
-- [Segmenter Worker](workers/segmenter/README.md) - Line grouping and translation unit creation
-- [Inpainting Worker](workers/inpainting/README.md) - Text removal and background reconstruction
-- [Drawer Worker](workers/drawer/README.md) - Translated text rendering
 
 ### Worker Communication
 
@@ -136,42 +127,9 @@ Workers communicate via REST APIs with standardized JSON formats. Each worker:
 - Accepts POST requests with specific input format
 - Returns JSON responses with standardized output format
 
-## 🔧 Creating Custom Workers (Not Yet Implemented)
+## 🔧 Creating Custom Workers 
 
-### Step 1: Understand the Worker Interface
-
-All workers must implement the `BaseWorker` interface:
-
-```python
-from abc import ABC, abstractmethod
-from typing import Dict, Any
-
-class BaseWorker(ABC):
-    @abstractmethod
-    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process input and return output in standardized format.
-        
-        Args:
-            input_data: Dictionary with worker-specific input
-            
-        Returns:
-            Dictionary with standardized output format
-        """
-        pass
-    
-    @abstractmethod
-    def validate_input(self, input_data: Dict[str, Any]) -> bool:
-        """Validate input format"""
-        pass
-    
-    @abstractmethod
-    def validate_output(self, output_data: Dict[str, Any]) -> bool:
-        """Validate output format"""
-        pass
-```
-
-### Step 2: Create Your Worker
+### Step 1: Create Your Worker
 
 Create a new directory in `workers/`:
 
@@ -235,7 +193,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host=host, port=port, reload=False, log_level=log_level)
 ```
 
-### Step 3: Create Docker Configuration
+### Step 2: Create Docker Configuration
 
 Example `Dockerfile`:
 
@@ -252,7 +210,7 @@ COPY . .
 CMD ["python", "app.py"]
 ```
 
-### Step 4: Update docker compose.yml
+### Step 3: Update docker compose.yml
 
 Add your worker to `docker compose.yml`:
 
@@ -267,7 +225,7 @@ your-worker:
     - ./workers/your_worker:/app
 ```
 
-### Step 5: Update Pipeline
+### Step 4: Update Pipeline
 
 Modify `pipeline.py` to include your worker:
 
@@ -279,7 +237,7 @@ YOUR_WORKER_URL = "http://your-worker:5000/process"
 your_result = requests.post(YOUR_WORKER_URL, json=input_data)
 ```
 
-### Step 6: Test Your Worker
+### Step 5: Test Your Worker
 
 ```bash
 # Build and start your worker
@@ -349,6 +307,7 @@ python app.py
 ## 📧 Contact
 
 For questions or support, please open an issue on GitHub. We are currently developing
+
 
 
 
