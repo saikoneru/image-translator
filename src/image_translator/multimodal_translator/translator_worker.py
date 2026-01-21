@@ -79,9 +79,10 @@ class TranslationWorker(BaseWorker):
             yield texts[i:i + batch_size]
 
     def _generate(self, texts: List[str], src_lang: str, tgt_lang: str, images: list) -> Dict[str, List[str]]:
-        text_batches = self.create_batches(texts, batch_size=2)
-
-        image_batches = self.create_batches(images, batch_size=2)
+        batch_size = 1
+        text_batches = self.create_batches(texts, batch_size=1)
+        image_batches = self.create_batches(images, batch_size=1
+                                            )
         hyps = []
         for batch, image_batch in zip(text_batches, image_batches):
             batch = [x.lstrip().rstrip() for x in batch]
@@ -89,7 +90,8 @@ class TranslationWorker(BaseWorker):
                     audio_paths=[],
                     image_paths=image_batch,
                     source_texts=batch,
-                    target_lang=tgt_lang,)
+                    target_lang=tgt_lang,
+                    num_beams=1)
             print("Source Texts:", batch)
             print("Translations:", translations)
             hyps.extend(translations)

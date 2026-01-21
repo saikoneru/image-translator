@@ -26,7 +26,7 @@ services:
       - ocr-worker
       - segmenter-worker
       - inpainter-worker
-      - translator-worker
+      - multimodal-translator-worker
       - layout-worker
     networks:
       - translator-network
@@ -96,26 +96,27 @@ services:
     restart: unless-stopped
 
   # Translation Worker (GPU 1)
-  translator-worker:
-    build:
-      context: .
-      dockerfile: src/image_translator/translator/Dockerfile
-      args:
-        WORKER_NAME: translation
-    container_name: image-translator-translation
-    ports:
-      - "8009:8004"
-    volumes:
-      - ./models:/app/models
-    environment:
-      - PYTHONUNBUFFERED=1
-      - WORKER_PORT=8004
-      - NVIDIA_VISIBLE_DEVICES=${GPU0}
-    runtime: nvidia
-    networks:
-      - translator-network
-    restart: unless-stopped
+  #translator-worker:
+    #build:
+      #context: .
+        #dockerfile: src/image_translator/translator/Dockerfile
+        #args:
+        #WORKER_NAME: translation
+          #container_name: image-translator-translation
+      #ports:
+      # - "8009:8004"
+        #volumes:
+      #- ./models:/app/models
+        #environment:
+      #- PYTHONUNBUFFERED=1
+        #- WORKER_PORT=8004
+        # - NVIDIA_VISIBLE_DEVICES=${GPU0}
+        #runtime: nvidia
+      #networks:
+      #- translator-network
+        #   restart: unless-stopped
 
+  # Multimodal Translator Worker (GPU 1)
   multimodal-translator-worker:
     build:
       context: .
