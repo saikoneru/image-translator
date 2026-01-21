@@ -91,7 +91,7 @@ class TranslationWorker(BaseWorker):
                     image_paths=image_batch,
                     source_texts=batch,
                     target_lang=tgt_lang,
-                    num_beams=1)
+                    num_beams=3)
             print("Source Texts:", batch)
             print("Translations:", translations)
             hyps.extend(translations)
