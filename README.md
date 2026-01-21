@@ -45,7 +45,7 @@ cd image-translator
 2. **Download Layout Models:**
    
    The layout worker requires HiSAM models. Download both:
-   - **HiSAM checkpoint** from [HiSAM releases](https://github.com/ymy-k/Hi-SAM/releases)
+   - **HiSAM checkpoint** from [HiSAM checkpoint](I just checked how much the multimodal translator is using and looks like its using around 45000MiB.  )
    - **SAM ViT-H image encoder** (see NOTE in HiSAM README)
    
    Place downloaded models in `models/` directory at project root:
@@ -254,3 +254,4 @@ Add worker URL to your pipeline configuration and integrate into processing flow
 ## Contact
 
 For questions or support, please open an issue on [GitHub](https://github.com/saikoneru/image-translator).
+
