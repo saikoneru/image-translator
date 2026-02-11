@@ -1,6 +1,4 @@
 ## Update 
-
-[![EACL 2026](https://img.shields.io/badge/System%20Demonstrations-0052CC)](https://2026.eacl.org/)
 [![arXiv](https://img.shields.io/badge/arXiv-2512.02817-b31b1b.svg)](https://arxiv.org/abs/2512.02817)
 
 This work was accepted for presentation in the **System Demonstrations** track at the EACL 2026
@@ -287,6 +285,7 @@ If you use this work in your research, please cite:
   journal={arXiv preprint arXiv:2512.02817},
   year={2025}
 }
+
 
 
 
