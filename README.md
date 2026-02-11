@@ -1,3 +1,14 @@
+## Update 
+
+[![EACL 2026](https://img.shields.io/badge/System%20Demonstrations-0052CC)](https://2026.eacl.org/)
+[![arXiv](https://img.shields.io/badge/arXiv-2512.02817-b31b1b.svg)](https://arxiv.org/abs/2512.02817)
+
+This work was accepted for presentation in the **System Demonstrations** track at the EACL 2026
+
+### Looking for Support/Collaboration
+
+Seeking collaborators for advice/building/improving **rendering**. Specifically, model-based approach for text rendering using the translations and the original font. I personally hate the current vibe-coded heuristic-based and quantum level uncertainitity on how it will look in complicated images. If this topic is exciting for you and have time to spare, please send me a email!
+
 # Image Translator
 
 A modular image translation pipeline that translates text inside images while preserving layout and style.
@@ -9,6 +20,20 @@ A modular image translation pipeline that translates text inside images while pr
 - **Extensible**: Easy to add custom workers or replace existing ones
 - **Multi-language Support**: Translate between multiple languages
 - **Rule-based Style Preservation**: Aims to maintains original text styling (font, color, position)
+
+## Examples
+
+### Example 1
+
+| Source Image | Translated Image |
+|--------------|------------------|
+| ![Source](assets/examples/example1_source.png) | ![Translated](assets/examples/example1_translated.png) |
+
+### Example 2
+
+| Source Image | Translated Image |
+|--------------|------------------|
+| ![Source](assets/examples/example2_source.png) | ![Translated](assets/examples/example2_translated.png) |
 
 ## Pipeline Design
 
@@ -254,5 +279,17 @@ Add worker URL to your pipeline configuration and integrate into processing flow
 ## Contact
 
 For questions or support, please open an issue on [GitHub](https://github.com/saikoneru/image-translator).
+
+## Citation
+
+If you use this work in your research, please cite:
+
+```bibtex
+@article{koneru2025boom,
+  title={BOOM: Beyond Only One Modality KIT's Multimodal Multilingual Lecture Companion},
+  author={Koneru, Sai and Retkowski, Fabian and Huber, Christian and Hilgert, Lukas and Akti, Seymanur and Ugan, Enes Yavuz and Waibel, Alexander and Niehues, Jan},
+  journal={arXiv preprint arXiv:2512.02817},
+  year={2025}
+}
 
 
