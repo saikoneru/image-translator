@@ -23,17 +23,13 @@ A modular image translation pipeline that translates text inside images while pr
 
 ## Examples
 
-### Example 1
 
 | Source Image | Translated Image |
 |--------------|------------------|
-| ![Source](assets/examples/example1_source.png) | ![Translated](assets/examples/example1_translated.png) |
-
-### Example 2
-
-| Source Image | Translated Image |
-|--------------|------------------|
-| ![Source](assets/examples/example2_source.png) | ![Translated](assets/examples/example2_translated.png) |
+| ![Source](assets/eating_src.png) | ![Translated](assets/eating_translated.png) |
+| ![Source](assets/exit_road.jpg) | ![Translated](assets/exit_road_omni.png) |
+| ![Source](assets/exit_person.jpg) | ![Translated](assets/exit_person_omni.png) |
+| ![Source](assets/slide_original.png) | ![Translated](assets/slide_translated.png) |
 
 ## Pipeline Design
 
@@ -291,5 +287,6 @@ If you use this work in your research, please cite:
   journal={arXiv preprint arXiv:2512.02817},
   year={2025}
 }
+
 
 
